@@ -16,7 +16,7 @@ services:
   # TRAEFIK
   ########################################
   traefik:
-    image: traefik:v3.0
+    image: traefik:latest
     container_name: traefik
 
     command:
@@ -52,7 +52,7 @@ services:
   # MQTT - MOSQUITTO
   ########################################
   mqtt:
-    image: eclipse-mosquitto:2.0.18
+    image: eclipse-mosquitto:latest
     container_name: mqtt-broker
 
     volumes:
@@ -74,7 +74,7 @@ services:
   # INFLUXDB
   ########################################
   influxdb:
-    image: influxdb:2.7
+    image: influxdb:latest
     container_name: influxdb
 
     volumes:
@@ -95,7 +95,7 @@ services:
   # GRAFANA
   ########################################
   grafana:
-    image: grafana/grafana-oss:10
+    image: grafana/grafana:latest
     container_name: grafana
 
     volumes:
@@ -120,7 +120,7 @@ services:
   # NODE-RED (PROTETTO)
   ########################################
   nodered:
-    image: nodered/node-red:3.1
+    image: nodered/node-red:latest
     container_name: nodered
 
     volumes:
@@ -142,7 +142,7 @@ services:
   # PORTAINER
   ########################################
   portainer:
-    image: portainer/portainer-ce:2.19.5
+    image: portainer/portainer-ce:latest
     container_name: portainer
 
     volumes:
