@@ -142,7 +142,7 @@ services:
   # PORTAINER
   ########################################
   portainer:
-    image: portainer/portainer-ce:latest
+    image: portainer/portainer-ce:2.20.3
     container_name: portainer
 
     volumes:
@@ -154,8 +154,10 @@ services:
       - "traefik.http.routers.portainer.rule=Host(`portainer.vlnet.me`)"
       - "traefik.http.routers.portainer.entrypoints=websecure"
       - "traefik.http.routers.portainer.tls.certresolver=le"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
     restart: unless-stopped
+
 
 volumes:
   influxdb-data:
