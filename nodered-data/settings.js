@@ -4,7 +4,7 @@ module.exports = {
     type: "credentials",
     users: [{
       username: "admin",
-      password: "$2b$08$INCOLLA_HASH_GENERATO",
+      password: "$2y$08$BHnHnAct.zvXSKref7IVJuBXnqld0ofh.V.2yDTcSRllZUMTJuPLq",
       permissions: "*"
     }]
   }
