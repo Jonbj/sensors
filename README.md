@@ -52,9 +52,14 @@ Tutti i record A (o CNAME) devono puntare all’IP della VM:
 - Porte aperte sul server
 
 ## Struttura cartelle
-- `proxy/`  → Traefik
-- `iot/`    → Mosquitto, InfluxDB, Grafana, Node-RED, Portainer
-- `web/`    → WordPress, MariaDB, Redis, backup
+vlnet-infra/
+├── proxy/        # Traefik
+├── iot/          # MQTT, Node-RED, InfluxDB, Grafana, Portainer
+├── web/          # WordPress + WooCommerce
+├── scripts/      # start / stop / backup / check
+├── backups/      # backup locali
+└── docs/         # documentazione
+
 
 ## Config da completare prima del primo avvio
 ### IoT
@@ -69,3 +74,45 @@ Tutti i record A (o CNAME) devono puntare all’IP della VM:
 1) Preflight (controlli)
 ```bash
 ./scripts/preflight-check.sh
+2) Avvio degli stack
+```bash
+./scripts/start.sh
+3) Verifica servizi
+https://www.vlnet.me
+https://grafana.vlnet.me
+https://nodered.vlnet.me
+https://portainer.vlnet.me
+MQTT TLS:
+host: mqtt.vlnet.me
+porta: 8883
+
+## Stop del progetto
+```bash
+./scripts/stop.sh
+
+## Stop del progetto
+Backup manuale completo:
+
+```bash
+./scripts/backup-all.sh
+
+I backup vengono salvati in:
+backups/iot/
+backups/web/
+
+##  Note di sicurezza
+MQTT protetto con user/password e TLS
+Node-RED e Grafana protetti da login
+InfluxDB e MariaDB non esposti pubblicamente
+HTTPS automatico con Let’s Encrypt
+
+##  Note operative
+usare immagini Docker con versioni fissate (no latest)
+aggiornare con docker compose pull && docker compose up -d
+non committare file .env o backup
+testare periodicamente i backup
+
+##  Stato del progetto
+Fase iniziale, ma infrastruttura production-ready.
+Il sistema è pensato per crescere senza dover essere riprogettato.
+
