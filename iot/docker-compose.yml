@@ -78,6 +78,10 @@ services:
     image: nodered/node-red:4.1.2-22
     container_name: nodered
 
+    # Node-RED NON gira come root.
+    # Usiamo esplicitamente l'UID/GID corretti per evitare problemi di permessi.
+    user: "1000:1000"
+
     volumes:
       - ./nodered-data:/data
 
