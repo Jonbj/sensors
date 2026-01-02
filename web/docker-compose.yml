@@ -1,7 +1,7 @@
 services:
 
   db:
-    image: mariadb:10.11
+    image: mariadb:12.1.2
     container_name: wp-db
     environment:
       MARIADB_DATABASE: ${WP_DB_NAME}
@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7.2-alpine
+    image: redis:8.4-alpine
     container_name: wp-redis
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
 
   wordpress:
-    image: wordpress:6.6.2-php8.2-apache
+    image: wordpress:6.9-php8.2-apache
     container_name: wp
     environment:
       WORDPRESS_DB_HOST: db:3306
