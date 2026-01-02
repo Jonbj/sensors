@@ -1,2 +1,0 @@
-# sensors
-Sensros ESP32
