@@ -6,7 +6,7 @@ module.exports = {
     type: "credentials",
     users: [{
       username: "admin",
-      password: "$2b$08$REPLACE_WITH_REAL_BCRYPT_HASH",
+      password: "2y$08$IYIy6.HcW7Yj28aTkW34fOh/z4cspRye28VyBfflRjWquLw6BAYky",
       permissions: "*"
     }]
   }

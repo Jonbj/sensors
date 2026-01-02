@@ -1,7 +1,7 @@
 services:
 
   mqtt:
-    image: eclipse-mosquitto:2.0.18
+    image: eclipse-mosquitto:2.0.22
     container_name: mqtt-broker
 
     # Mosquitto config is mounted read-only to avoid accidental edits from inside container
