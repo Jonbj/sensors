@@ -1,0 +1,25 @@
+# Secrets
+**/.env
+**/*.env
+
+# Backups
+backups/
+**/backups/
+
+# ACME storage (should live in a docker volume, never in git)
+**/acme.json
+
+# Logs
+**/*.log
+**/log/
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Do not commit real Mosquitto passwords file (contains credential hashes)
+iot/mosquitto/config/passwords

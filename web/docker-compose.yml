@@ -1,0 +1,91 @@
+services:
+
+  db:
+    image: mariadb:10.11
+    container_name: wp-db
+    environment:
+      MARIADB_DATABASE: ${WP_DB_NAME}
+      MARIADB_USER: ${WP_DB_USER}
+      MARIADB_PASSWORD: ${WP_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${WP_DB_ROOT_PASSWORD}
+    volumes:
+      - wp-db:/var/lib/mysql
+    networks:
+      - web-internal
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: wp-redis
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - wp-redis:/data
+    networks:
+      - web-internal
+    restart: unless-stopped
+
+  wordpress:
+    image: wordpress:6.6.2-php8.2-apache
+    container_name: wp
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_NAME: ${WP_DB_NAME}
+      WORDPRESS_DB_USER: ${WP_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD}
+
+      # Hardening + defaults (you will still configure WordPress from the UI)
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_HOME','https://www.vlnet.me');
+        define('WP_SITEURL','https://www.vlnet.me');
+        define('DISALLOW_FILE_EDIT', true);
+        define('WP_MEMORY_LIMIT', '256M');
+
+        // Redis Object Cache (install plugin "Redis Object Cache" in WP)
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_REDIS_PORT', 6379);
+
+    volumes:
+      - wp-html:/var/www/html
+
+    depends_on:
+      - db
+      - redis
+
+    labels:
+      - "traefik.enable=true"
+
+      # www.vlnet.me -> WordPress
+      - "traefik.http.routers.wp.rule=Host(`www.vlnet.me`)"
+      - "traefik.http.routers.wp.entrypoints=websecure"
+      - "traefik.http.routers.wp.tls.certresolver=le"
+      - "traefik.http.services.wp.loadbalancer.server.port=80"
+
+      # vlnet.me -> redirect -> www.vlnet.me
+      - "traefik.http.routers.wp-root.rule=Host(`vlnet.me`)"
+      - "traefik.http.routers.wp-root.entrypoints=websecure"
+      - "traefik.http.routers.wp-root.tls.certresolver=le"
+      - "traefik.http.routers.wp-root.middlewares=redirect-to-www@docker"
+      - "traefik.http.middlewares.redirect-to-www.redirectregex.regex=^https://vlnet\\.me/(.*)"
+      - "traefik.http.middlewares.redirect-to-www.redirectregex.replacement=https://www.vlnet.me/$$1"
+      - "traefik.http.middlewares.redirect-to-www.redirectregex.permanent=true"
+
+    networks:
+      - proxy
+      - web-internal
+
+    restart: unless-stopped
+
+networks:
+  proxy:
+    external: true
+  web-internal:
+    name: web-internal
+    internal: true
+
+volumes:
+  wp-db:
+    name: wp-db
+  wp-html:
+    name: wp-html
+  wp-redis:
+    name: wp-redis

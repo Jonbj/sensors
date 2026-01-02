@@ -1,0 +1,136 @@
+services:
+
+  mqtt:
+    image: eclipse-mosquitto:2.0.18
+    container_name: mqtt-broker
+
+    # Mosquitto config is mounted read-only to avoid accidental edits from inside container
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+    labels:
+      # Expose MQTT through Traefik TCP router with TLS termination (SNI mqtt.vlnet.me)
+      - "traefik.enable=true"
+      - "traefik.tcp.routers.mqtts.rule=HostSNI(`mqtt.vlnet.me`)"
+      - "traefik.tcp.routers.mqtts.entrypoints=mqtts"
+      - "traefik.tcp.routers.mqtts.tls=true"
+      - "traefik.tcp.routers.mqtts.tls.certresolver=le"
+      - "traefik.tcp.services.mqtts.loadbalancer.server.port=1883"
+
+    networks:
+      - proxy
+      - iot-internal
+
+    restart: unless-stopped
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-backup:/backup
+
+    environment:
+      # First-run initialization (runs only if the data volume is empty)
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USER}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN}
+
+    networks:
+      - iot-internal
+
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:10.2.3
+    container_name: grafana
+
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.vlnet.me`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=le"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+    depends_on:
+      - influxdb
+
+    networks:
+      - proxy
+      - iot-internal
+
+    restart: unless-stopped
+
+  nodered:
+    image: nodered/node-red:3.1
+    container_name: nodered
+
+    volumes:
+      - ./nodered-data:/data
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nodered.rule=Host(`nodered.vlnet.me`)"
+      - "traefik.http.routers.nodered.entrypoints=websecure"
+      - "traefik.http.routers.nodered.tls.certresolver=le"
+      - "traefik.http.services.nodered.loadbalancer.server.port=1880"
+
+    depends_on:
+      - mqtt
+      - influxdb
+
+    networks:
+      - proxy
+      - iot-internal
+
+    restart: unless-stopped
+
+  portainer:
+    image: portainer/portainer-ce:2.20.3
+    container_name: portainer
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer-data:/data
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.vlnet.me`)"
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.routers.portainer.tls.certresolver=le"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+
+    networks:
+      - proxy
+
+    restart: unless-stopped
+
+networks:
+  proxy:
+    external: true
+  iot-internal:
+    name: iot-internal
+    internal: true
+
+volumes:
+  influxdb-data:
+    name: influxdb-data
+  influxdb-backup:
+    name: influxdb-backup
+  grafana-storage:
+    name: grafana-storage
+  portainer-data:
+    name: portainer-data

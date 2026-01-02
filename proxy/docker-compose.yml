@@ -1,0 +1,52 @@
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik
+    command:
+      # Docker provider
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+
+      # EntryPoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.mqtts.address=:8883"
+
+      # Redirect HTTP -> HTTPS
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+
+      # Let's Encrypt (HTTP-01)
+      - "--certificatesresolvers.le.acme.email=admin@vlnet.me"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+
+      # (Optional) set to DEBUG while troubleshooting:
+      # - "--log.level=INFO"
+
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8883:8883"
+
+    volumes:
+      # Read-only docker socket is enough for Traefik labels discovery
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+      # IMPORTANT: keep this volume (do NOT do `down -v` on proxy stack)
+      - traefik-letsencrypt:/letsencrypt
+
+    networks:
+      - proxy
+
+    restart: unless-stopped
+
+networks:
+  proxy:
+    # Shared network used by multiple stacks (proxy/iot/web)
+    name: proxy
+    external: true
+
+volumes:
+  traefik-letsencrypt:
+    name: traefik-letsencrypt
