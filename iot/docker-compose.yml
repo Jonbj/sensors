@@ -13,7 +13,7 @@ services:
     labels:
       # Expose MQTT through Traefik TCP router with TLS termination (SNI mqtt.vlnet.me)
       - "traefik.enable=true"
-      - "traefik.tcp.routers.mqtts.rule=HostSNI(`mqtt.vlnet.me`)"
+      - "traefik.tcp.routers.mqtts.rule=HostSNI(`*`)"
       - "traefik.tcp.routers.mqtts.entrypoints=mqtts"
       - "traefik.tcp.routers.mqtts.tls=true"
       - "traefik.tcp.routers.mqtts.tls.certresolver=le"
