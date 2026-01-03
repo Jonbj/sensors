@@ -12,20 +12,31 @@ if ! docker network inspect proxy >/dev/null 2>&1; then
 fi
 
 echo "[start] starting proxy stack (Traefik)..."
-docker compose -f "$ROOT_DIR/proxy/docker-compose.yml" up -d
+docker compose \
+  --project-directory "$ROOT_DIR/proxy" \
+  -f "$ROOT_DIR/proxy/docker-compose.yml" \
+  up -d
 
 echo "[start] starting iot stack..."
 if [[ ! -f "$ROOT_DIR/iot/.env" ]]; then
   echo "[start] ERROR: missing iot/.env (copy iot/.env.example -> iot/.env and edit secrets)"
   exit 1
 fi
-docker compose -f "$ROOT_DIR/iot/docker-compose.yml" --env-file "$ROOT_DIR/iot/.env" up -d
+docker compose \
+  --project-directory "$ROOT_DIR/iot" \
+  -f "$ROOT_DIR/iot/docker-compose.yml" \
+  --env-file "$ROOT_DIR/iot/.env" \
+  up -d
 
 echo "[start] starting web stack..."
 if [[ ! -f "$ROOT_DIR/web/.env" ]]; then
   echo "[start] ERROR: missing web/.env (copy web/.env.example -> web/.env and edit secrets)"
   exit 1
 fi
-docker compose -f "$ROOT_DIR/web/docker-compose.yml" --env-file "$ROOT_DIR/web/.env" up -d
+docker compose \
+  --project-directory "$ROOT_DIR/web" \
+  -f "$ROOT_DIR/web/docker-compose.yml" \
+  --env-file "$ROOT_DIR/web/.env" \
+  up -d
 
 echo "[start] done."
