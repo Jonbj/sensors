@@ -91,6 +91,8 @@ services:
       - "traefik.http.routers.nodered.entrypoints=websecure"
       - "traefik.http.routers.nodered.tls.certresolver=le"
       - "traefik.http.services.nodered.loadbalancer.server.port=1880"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.services.nodered.loadbalancer.server.port=1880"
 
     depends_on:
       - mqtt
