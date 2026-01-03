@@ -60,8 +60,10 @@ services:
 
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
       - "traefik.http.routers.grafana.rule=Host(`grafana.vlnet.me`)"
       - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls=true"
       - "traefik.http.routers.grafana.tls.certresolver=le"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
 
