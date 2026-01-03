@@ -11,12 +11,14 @@ services:
       - ./mosquitto/log:/mosquitto/log
 
     labels:
-      # Expose MQTT through Traefik TCP router with TLS termination (SNI mqtt.vlnet.me)
       - "traefik.enable=true"
-      - "traefik.tcp.routers.mqtts.rule=HostSNI(`*`)"
+      - "traefik.docker.network=proxy"
+    
       - "traefik.tcp.routers.mqtts.entrypoints=mqtts"
+      - "traefik.tcp.routers.mqtts.rule=HostSNI(`*`)"
       - "traefik.tcp.routers.mqtts.tls=true"
       - "traefik.tcp.routers.mqtts.tls.certresolver=le"
+    
       - "traefik.tcp.services.mqtts.loadbalancer.server.port=1883"
 
     networks:
