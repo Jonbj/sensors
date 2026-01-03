@@ -36,7 +36,6 @@ services:
       - influxdb-backup:/backup
 
     environment:
-      # First-run initialization (runs only if the data volume is empty)
       DOCKER_INFLUXDB_INIT_MODE: setup
       DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USER}
       DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD}
@@ -44,7 +43,17 @@ services:
       DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET}
       DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN}
 
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.influxdb.rule=Host(`influxdb.vlnet.me`)"
+      - "traefik.http.routers.influxdb.entrypoints=websecure"
+      - "traefik.http.routers.influxdb.tls=true"
+      - "traefik.http.routers.influxdb.tls.certresolver=le"
+      - "traefik.http.services.influxdb.loadbalancer.server.port=8086"
+
     networks:
+      - proxy
       - iot-internal
 
     restart: unless-stopped
