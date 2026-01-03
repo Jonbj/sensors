@@ -6,7 +6,7 @@ services:
 
     # Mosquitto config is mounted read-only to avoid accidental edits from inside container
     volumes:
-      - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
 
