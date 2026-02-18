@@ -39,4 +39,10 @@ docker compose \
   --env-file "$ROOT_DIR/web/.env" \
   up -d
 
+echo "[start] starting openclaw worker stack..."
+docker compose \
+  --project-directory "$ROOT_DIR/openclaw" \
+  -f "$ROOT_DIR/openclaw/docker-compose.yml" \
+  up -d
+
 echo "[start] done."

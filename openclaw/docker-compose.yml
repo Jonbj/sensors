@@ -1,0 +1,68 @@
+services:
+  # OpenClaw Gateway (worker-only role)
+  openclaw-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openclaw-gateway
+    restart: unless-stopped
+
+    environment:
+      TZ: Europe/Rome
+      # Optionally fix the gateway token from an env file:
+      # OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+
+      # IMPORTANT: the Spirulina comprehension job expects GROBID.
+      # We'll update job prompts to use http://grobid:8070 inside this network.
+
+    # Persist ALL OpenClaw state (config, sessions, cron store, workspace)
+    volumes:
+      - openclaw-state:/home/node/.openclaw
+
+      # Allow OpenClaw to run its own sandbox containers (optional but recommended)
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    # No public ports by default (worker only). If you want the Control UI,
+    # expose it via Traefik labels on the proxy network.
+    networks:
+      - openclaw
+      # - proxy
+
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.docker.network=proxy"
+    #   - "traefik.http.routers.openclaw.rule=Host(`openclaw.vlnet.me`)"
+    #   - "traefik.http.routers.openclaw.entrypoints=websecure"
+    #   - "traefik.http.routers.openclaw.tls=true"
+    #   - "traefik.http.routers.openclaw.tls.certresolver=le"
+    #   - "traefik.http.services.openclaw.loadbalancer.server.port=18789"
+
+  # GROBID service (used by comprehension for PDF-first extraction)
+  grobid:
+    image: lfoppiano/grobid:0.8.0
+    container_name: grobid
+    restart: unless-stopped
+
+    environment:
+      GROBID_PORT: 8070
+
+    networks:
+      - openclaw
+
+    # GROBID can be memory-hungry; tune for your VM.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 4g
+
+networks:
+  openclaw:
+    name: openclaw
+    internal: true
+
+  # proxy:
+  #   external: true
+
+volumes:
+  openclaw-state:
+    name: openclaw-state

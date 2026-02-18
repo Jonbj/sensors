@@ -11,22 +11,25 @@ mkdir -p "$OUT_IOT" "$OUT_WEB"
 
 echo "== backup started: $TS =="
 
-echo "[1/5] InfluxDB backup (portable tar.gz)"
+echo "[1/6] InfluxDB backup (portable tar.gz)"
 docker exec influxdb influx backup /backup/"$TS" >/dev/null
 docker exec influxdb sh -c "tar -czf /backup/influx_${TS}.tar.gz -C /backup ${TS}"
 docker cp influxdb:/backup/influx_${TS}.tar.gz "$OUT_IOT/influx_${TS}.tar.gz"
 docker exec influxdb rm -rf /backup/"$TS" /backup/influx_${TS}.tar.gz
 
-echo "[2/5] Node-RED data"
+echo "[2/6] Node-RED data"
 tar -czf "$OUT_IOT/nodered_${TS}.tar.gz" -C "$ROOT_DIR/iot" nodered-data
 
-echo "[3/5] Mosquitto (config+data+log)"
+echo "[3/6] Mosquitto (config+data+log)"
 tar -czf "$OUT_IOT/mosquitto_${TS}.tar.gz" -C "$ROOT_DIR/iot" mosquitto
 
-echo "[4/5] Grafana volume export"
+echo "[4/6] Grafana volume export"
 docker run --rm -v grafana-storage:/var/lib/grafana -v "$OUT_IOT":/out alpine:3.20 sh -c "cd /var/lib/grafana && tar -czf /out/grafana_${TS}.tar.gz ."
 
-echo "[5/5] WordPress DB + files"
+echo "[5/6] OpenClaw (state + KB + cron store)"
+docker run --rm -v openclaw-state:/data -v "$OUT_IOT":/out alpine:3.20 sh -c "cd /data && tar -czf /out/openclaw_${TS}.tar.gz ."
+
+echo "[6/6] WordPress DB + files"
 if [[ ! -f "$ROOT_DIR/web/.env" ]]; then
   echo "ERROR: missing web/.env (copy web/.env.example -> web/.env)"
   exit 1
