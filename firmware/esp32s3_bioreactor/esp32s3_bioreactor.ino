@@ -460,14 +460,10 @@ void loop() {
     display.print(temp, 1);
   }
 
-  // Lux a destra (grande ma compatto)
+  // pH a destra (al posto di Lux)
   display.setCursor(78, 0);
-  if (lux < 0) {
-    display.print("L:--");
-  } else {
-    display.print("L:");
-    display.print(lux, 0);
-  }
+  display.print("pH:");
+  display.print(sim_ph, 1);
 
   // Barre WiFi: spostate SOTTO la riga T/L per non sovrapporsi a L.
   drawWiFiBars(104, 34, bars);
@@ -503,9 +499,7 @@ void loop() {
   display.setCursor(96, 54);
   display.print(sim_od, 2);
 
-  // MQTT status: piccolo, in basso a destra
-  display.setCursor(96, 62);
-  display.print(client.connected() ? "MQ" : "--");
+  // (MQTT status rimosso: non necessario sul display)
 
   display.display();
 
