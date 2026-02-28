@@ -473,9 +473,12 @@ void loop() {
   // Riga 2 (piccola): Lux + DO + barre WiFi
   display.setTextSize(1);
   display.setCursor(0, 20);
-  display.print("L ");
-  if (lux < 0) display.print("--");
-  else display.print(lux, 0);
+  display.print("Lux ");
+  if (lux < 0 || isnan(lux)) {
+    display.print("--");
+  } else {
+    display.print((int)lroundf(lux));
+  }
 
   display.setCursor(52, 20);
   display.print("DO ");
