@@ -389,6 +389,7 @@ void loop() {
   // - MQTT publish: slow (5 min)
   static unsigned long lastUiMs = 0;
   static unsigned long lastPublishMs = 0;
+  static unsigned long lastPublishEpoch = 0; // epoch seconds
 
   const unsigned long UI_INTERVAL_MS = 2000;       // 2s refresh UI
   const unsigned long PUBLISH_INTERVAL_MS = 300000; // 5 min
@@ -449,56 +450,113 @@ void loop() {
   // - Riga 1 in grande: temperatura + lux
   // - Resto in piccolo
 
-  // Layout richiesto:
-  // Riga 1 (gialla, grande): T a sinistra, pH a destra (entrambi grandi)
-  // Riga 2: L, DO, barre WiFi
-  // Riga 3: NO3
-  // Riga 4: Bio, OD
+  // Pagine automatiche ogni 10s:
+  // 0 = Telemetria, 1 = Diagnostica
+  const uint32_t page = (millis() / 10000) % 2;
 
-  // Riga 1 (grande)
-  display.setTextSize(2);
-  display.setCursor(0, 0);
-  if (temp < -200 || temp > 850 || isnan(temp)) {
-    display.print("T:--");
+  if (page == 0) {
+    // --- PAGINA 1: TELEMETRIA ---
+
+    // Riga 1 (gialla, grande): Temperatura
+    display.setTextSize(2);
+    display.setCursor(0, 0);
+    if (temp < -200 || temp > 850 || isnan(temp)) {
+      display.print("T:--");
+    } else {
+      display.print("T:");
+      display.print(temp, 1);
+    }
+
+    // pH in alto a destra (piccolo ma completo) per non tagliarsi mai
+    display.setTextSize(1);
+    display.setCursor(64, 0);
+    display.print("pH:");
+    display.print(sim_ph, 1);
+
+    // Riga 2: Lux + DO + barre WiFi
+    display.setTextSize(1);
+    display.setCursor(0, 16);
+    display.print("Lux:");
+    if (lux < 0 || isnan(lux)) display.print("--");
+    else display.print((int)lroundf(lux));
+
+    display.setCursor(64, 16);
+    display.print("DO:");
+    display.print(sim_do, 1);
+
+    // Barre WiFi a destra sulla riga 2 (non sovrapposte)
+    drawWiFiBars(104, 24, bars);
+
+    // Riga 3: NO3
+    display.setCursor(0, 32);
+    display.print("NO3:");
+    display.print(sim_nitrates, 0);
+
+    // Riga 4: Bio + OD
+    display.setCursor(0, 44);
+    display.print("Bio:");
+    display.print(sim_biomass, 2);
+
+    display.setCursor(64, 44);
+    display.print("OD:");
+    display.print(sim_od, 2);
+
+    // Riga 5: Lux (raw) / Temp (raw) opzionale? lascio vuoto per pulizia
+
   } else {
-    display.print("T:");
-    display.print(temp, 1);
+    // --- PAGINA 2: DIAGNOSTICA ---
+    display.setTextSize(1);
+
+    // Riga 1: WiFi + RSSI
+    display.setCursor(0, 0);
+    display.print("WiFi:");
+    display.print(WiFi.status() == WL_CONNECTED ? "OK" : "NO");
+    display.print(" RSSI:");
+    display.print(rssi);
+
+    // Barre WiFi
+    drawWiFiBars(104, 16, bars);
+
+    // Riga 2: IP
+    display.setCursor(0, 12);
+    display.print("IP:");
+    if (WiFi.status() == WL_CONNECTED) {
+      display.print(WiFi.localIP());
+    } else {
+      display.print("-");
+    }
+
+    // Riga 3: MQTT
+    display.setCursor(0, 24);
+    display.print("MQTT:");
+    display.print(client.connected() ? "OK" : "NO");
+    display.print(" st=");
+    display.print(client.state());
+
+    // Riga 4: NTP / Epoch
+    display.setCursor(0, 36);
+    display.print("NTP:");
+    display.print(timestamp ? "OK" : "NO");
+    display.print(" ts=");
+    display.print((unsigned long)(timestamp ? timestamp : 0));
+
+    // Riga 5: last publish
+    display.setCursor(0, 48);
+    display.print("PUB:");
+    if (lastPublishEpoch) {
+      display.print(lastPublishEpoch);
+      display.print(" (-");
+      display.print((unsigned long)(timestamp - lastPublishEpoch));
+      display.print("s)");
+    } else {
+      display.print("never");
+    }
+
+    // Riga 6: heap
+    display.setCursor(0, 58);
+    display.print("Heap:");
+    display.print(ESP.getFreeHeap());
   }
-
-  // pH a destra (grande). Posizionato per stare in 128px.
-  display.setCursor(70, 0);
-  display.print("pH:");
-  display.print(sim_ph, 1);
-
-  // Riga 2 (piccola): Lux + DO + barre WiFi
-  display.setTextSize(1);
-  display.setCursor(0, 20);
-  display.print("Lux ");
-  if (lux < 0 || isnan(lux)) {
-    display.print("--");
-  } else {
-    display.print((int)lroundf(lux));
-  }
-
-  display.setCursor(52, 20);
-  display.print("DO ");
-  display.print(sim_do, 1);
-
-  // Barre WiFi a destra sulla riga 2 (non sovrapposte al testo)
-  drawWiFiBars(104, 28, bars);
-
-  // Riga 3: NO3
-  display.setCursor(0, 36);
-  display.print("NO3 ");
-  display.print(sim_nitrates, 0);
-  display.print(" mg/L");
-
-  // Riga 4: Bio + OD
-  display.setCursor(0, 52);
-  display.print("Bio ");
-  display.print(sim_biomass, 2);
-  display.print("  OD ");
-  display.print(sim_od, 2);
 
   display.display();
 
@@ -513,6 +571,7 @@ void loop() {
     addToBuffer(timestamp, lux, temp);
     if (client.connected()) {
       flushBufferMQTT();
+      lastPublishEpoch = timestamp;
     }
   }
 }
