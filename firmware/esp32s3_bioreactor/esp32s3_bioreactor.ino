@@ -460,43 +460,39 @@ void loop() {
     display.print(temp, 1);
   }
 
-  // pH a destra (al posto di Lux) in piccolo per non sovrapporsi
+  // Barre WiFi sulla prima riga, ma SENZA coprire il testo: le mettiamo più a destra e un filo più in basso.
+  drawWiFiBars(104, 10, bars);
+
+  // Riga 1: pH piccolo a destra (senza invadere le barre)
   display.setTextSize(1);
-  display.setCursor(70, 0);
+  display.setCursor(64, 0);
+  display.print("pH:");
+  display.print(sim_ph, 1);
+
+  // Riga 2: pH + DO grandi (molto più leggibile)
+  display.setTextSize(2);
+  display.setCursor(0, 16);
   display.print("pH");
   display.print(sim_ph, 1);
 
-  // Barre WiFi: subito sotto la prima riga, a destra (non sopra il testo)
-  drawWiFiBars(104, 16, bars);
-
-  // Riga 2: DO etichetta
-  display.setTextSize(1);
-  display.setCursor(0, 18);
+  display.setCursor(70, 16);
   display.print("DO");
-
-  // Riga 3: DO valore grande
-  display.setTextSize(2);
-  display.setCursor(0, 26);
   display.print(sim_do, 1);
 
-  // Riga 4: etichette per NO3/Bio/OD (stesso formato: label sopra value)
+  // Riga 3: NO3 + Bio (inline, leggibile)
   display.setTextSize(1);
   display.setCursor(0, 44);
-  display.print("NO3");
-  display.setCursor(54, 44);
-  display.print("Bio");
-  display.setCursor(96, 44);
-  display.print("OD");
-
-  // Riga 5: valori per NO3/Bio/OD
-  display.setCursor(0, 54);
+  display.print("NO3 ");
   display.print(sim_nitrates, 0);
-  display.setCursor(54, 54);
+  display.print("  Bio ");
   display.print(sim_biomass, 2);
-  display.setCursor(96, 54);
+
+  // Riga 4: OD
+  display.setCursor(0, 56);
+  display.print("OD ");
   display.print(sim_od, 2);
 
-  // (MQTT status rimosso: non necessario sul display)
+  // (MQTT status rimosso)
 
   display.display();
 
