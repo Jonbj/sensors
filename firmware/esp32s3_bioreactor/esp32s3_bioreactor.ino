@@ -449,50 +449,53 @@ void loop() {
   // - Riga 1 in grande: temperatura + lux
   // - Resto in piccolo
 
+  // Layout richiesto:
+  // Riga 1 (gialla, grande): T a sinistra, pH a destra (entrambi grandi)
+  // Riga 2: L, DO, barre WiFi
+  // Riga 3: NO3
+  // Riga 4: Bio, OD
+
   // Riga 1 (grande)
   display.setTextSize(2);
   display.setCursor(0, 0);
   if (temp < -200 || temp > 850 || isnan(temp)) {
     display.print("T:--");
   } else {
-    // es: T:22.1
     display.print("T:");
     display.print(temp, 1);
   }
 
-  // Barre WiFi sulla prima riga, ma SENZA coprire il testo: le mettiamo più a destra e un filo più in basso.
-  drawWiFiBars(104, 10, bars);
-
-  // Riga 1: pH piccolo a destra (senza invadere le barre)
-  display.setTextSize(1);
-  display.setCursor(64, 0);
+  // pH a destra (grande). Posizionato per stare in 128px.
+  display.setCursor(70, 0);
   display.print("pH:");
   display.print(sim_ph, 1);
 
-  // Riga 2: pH + DO grandi (molto più leggibile)
-  display.setTextSize(2);
-  display.setCursor(0, 16);
-  display.print("pH");
-  display.print(sim_ph, 1);
+  // Riga 2 (piccola): Lux + DO + barre WiFi
+  display.setTextSize(1);
+  display.setCursor(0, 20);
+  display.print("L ");
+  if (lux < 0) display.print("--");
+  else display.print(lux, 0);
 
-  display.setCursor(70, 16);
-  display.print("DO");
+  display.setCursor(52, 20);
+  display.print("DO ");
   display.print(sim_do, 1);
 
-  // Riga 3: NO3 + Bio (inline, leggibile)
-  display.setTextSize(1);
-  display.setCursor(0, 44);
+  // Barre WiFi a destra sulla riga 2 (non sovrapposte al testo)
+  drawWiFiBars(104, 28, bars);
+
+  // Riga 3: NO3
+  display.setCursor(0, 36);
   display.print("NO3 ");
   display.print(sim_nitrates, 0);
-  display.print("  Bio ");
+  display.print(" mg/L");
+
+  // Riga 4: Bio + OD
+  display.setCursor(0, 52);
+  display.print("Bio ");
   display.print(sim_biomass, 2);
-
-  // Riga 4: OD
-  display.setCursor(0, 56);
-  display.print("OD ");
+  display.print("  OD ");
   display.print(sim_od, 2);
-
-  // (MQTT status rimosso)
 
   display.display();
 
