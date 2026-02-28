@@ -460,26 +460,23 @@ void loop() {
     display.print(temp, 1);
   }
 
-  // pH a destra (al posto di Lux)
-  display.setCursor(78, 0);
-  display.print("pH:");
+  // pH a destra (al posto di Lux) in piccolo per non sovrapporsi
+  display.setTextSize(1);
+  display.setCursor(70, 0);
+  display.print("pH");
   display.print(sim_ph, 1);
 
-  // Barre WiFi: spostate SOTTO la riga T/L per non sovrapporsi a L.
-  drawWiFiBars(104, 34, bars);
+  // Barre WiFi: subito sotto la prima riga, a destra (non sopra il testo)
+  drawWiFiBars(104, 16, bars);
 
-  // Riga 2: pH + DO etichette
+  // Riga 2: DO etichetta
   display.setTextSize(1);
   display.setCursor(0, 18);
-  display.print("pH");
-  display.setCursor(64, 18);
   display.print("DO");
 
-  // Riga 3: pH + DO valori grandi
+  // Riga 3: DO valore grande
   display.setTextSize(2);
   display.setCursor(0, 26);
-  display.print(sim_ph, 1);
-  display.setCursor(64, 26);
   display.print(sim_do, 1);
 
   // Riga 4: etichette per NO3/Bio/OD (stesso formato: label sopra value)
