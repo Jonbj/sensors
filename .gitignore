@@ -23,3 +23,6 @@ Thumbs.db
 
 # Do not commit real Mosquitto passwords file (contains credential hashes)
 iot/mosquitto/config/passwords
+
+# local secrets
+firmware/esp32s3_bioreactor/secrets.h
