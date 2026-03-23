@@ -100,6 +100,12 @@ const char* ntpServer = "pool.ntp.org";
 // === SENSORI ===
 BH1750 lightMeter;
 
+// === BH1750 calibrazione ===
+// Fattore correttivo misurato confrontando con app lux meter su telefono:
+// lampada accesa: telefono 616 lux, sensore 202 lux → fattore 3.05
+// Nota: warm white 3000K ha spettro diverso dalla luce bianca standard del BH1750.
+#define LUX_FACTOR 3.05f
+
 #define MAX31865_SCK  4
 #define MAX31865_MOSI 6
 #define MAX31865_MISO 5
@@ -536,7 +542,7 @@ void loop() {
     state.ntp_ok = getLocalTime(&timeinfo, 500);
     if (state.ntp_ok) state.ts = (unsigned long)mktime(&timeinfo);
 
-    state.lux     = lightMeter.readLightLevel();
+    state.lux     = lightMeter.readLightLevel() * LUX_FACTOR;
     state.ph      = readPH();
     state.ec_uScm = readEC(isnan(state.temperature) ? 25.0f : state.temperature);
     state.od      = readTurbidity();
