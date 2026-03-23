@@ -71,43 +71,7 @@
      "color": {
       "mode": "thresholds"
      },
-     "mappings": [
-      {
-       "options": {
-        "from": 31,
-        "result": {
-         "color": "green",
-         "index": 0
-        },
-        "to": 35
-       },
-       "type": "range"
-      },
-      {
-       "options": {
-        "from": 0,
-        "result": {
-         "color": "orange",
-         "index": 1,
-         "text": "Low Temp"
-        },
-        "to": 31
-       },
-       "type": "range"
-      },
-      {
-       "options": {
-        "from": 35.6,
-        "result": {
-         "color": "orange",
-         "index": 2,
-         "text": "High Temp"
-        },
-        "to": 100
-       },
-       "type": "range"
-      }
-     ],
+     "mappings": [],
      "thresholds": {
       "mode": "percentage",
       "steps": [
@@ -167,43 +131,7 @@
    "description": "Current pH of the culture medium.\n\nOptimal range for Spirulina: 9.6 – 10.4 \npH increases during the day due to photosynthesis\nand decreases at night.\n\n⚠️ Low pH may indicate low photosynthesis \n⚠️ High pH may indicate nutrient imbalance",
    "fieldConfig": {
     "defaults": {
-     "mappings": [
-      {
-       "options": {
-        "from": 0,
-        "result": {
-         "color": "orange",
-         "index": 0,
-         "text": "Low pH"
-        },
-        "to": 9.3
-       },
-       "type": "range"
-      },
-      {
-       "options": {
-        "from": 9.4,
-        "result": {
-         "color": "green",
-         "index": 1
-        },
-        "to": 10.6
-       },
-       "type": "range"
-      },
-      {
-       "options": {
-        "from": 10.7,
-        "result": {
-         "color": "orange",
-         "index": 2,
-         "text": "High pH"
-        },
-        "to": 100
-       },
-       "type": "range"
-      }
-     ],
+     "mappings": [],
      "thresholds": {
       "mode": "absolute",
       "steps": [
@@ -1098,5 +1026,5 @@
  "timezone": "browser",
  "title": "Telemetry",
  "uid": "ad7t4dh",
- "version": 93
+ "version": 94
 }
