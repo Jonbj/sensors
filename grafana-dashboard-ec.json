@@ -716,7 +716,7 @@
     "type": "influxdb",
     "uid": "bf91u6s2l06wwd"
    },
-   "description": "Combined view of:\n• Light (Lux)\n• pH\n• Dissolved Oxygen\n\nShows how light directly affects photosynthesis,\noxygen production and pH during day/night cycles.",
+   "description": "Combined view of Light (Lux) and pH.\n\nShows how photosynthesis drives pH oscillation during day/night cycles.\npH rises during light hours (CO2 consumption) and drops at night.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -837,34 +837,12 @@
       "uid": "bf91u6s2l06wwd"
      },
      "hide": false,
-     "query": "from(bucket: \"sensor-data\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"telemetry_v2\" and r.device == \"esp32_bioreactor\" and r._field == \"do\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
-     "refId": "B"
-    },
-    {
-     "datasource": {
-      "type": "influxdb",
-      "uid": "bf91u6s2l06wwd"
-     },
-     "hide": false,
      "query": "from(bucket: \"sensor-data\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"telemetry_v2\" and r.device == \"esp32_bioreactor\" and r._field == \"ph\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
      "refId": "C"
     }
    ],
-   "title": "Light vs pH & Oxygen (Day/Night effect)",
+   "title": "Light vs pH (Day/Night effect)",
    "type": "timeseries"
-  },
-  {
-   "collapsed": false,
-   "gridPos": {
-    "h": 1,
-    "w": 24,
-    "x": 0,
-    "y": 37
-   },
-   "id": 21,
-   "panels": [],
-   "title": "BIOLOGICAL RESPONSE Crescita e risposta biologica",
-   "type": "row"
   },
   {
    "collapsed": false,
@@ -971,6 +949,398 @@
    ],
    "title": "EC — Electrical Conductivity (line + refill events)",
    "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 60
+   },
+   "id": 30,
+   "panels": [],
+   "title": "ANALISI & CONFRONTI",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "influxdb",
+    "uid": "bf91u6s2l06wwd"
+   },
+   "description": "Correlation between pH and electrical conductivity.\n\nRising EC with stable pH = nutrient addition.\nFalling EC = nutrient depletion.\npH drop with low EC = culture stress from nutrient limitation.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "barWidthFactor": 0.6,
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "showValues": false,
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": 0
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 61
+   },
+   "id": 31,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "hideZeros": false,
+     "mode": "single",
+     "sort": "none"
+    }
+   },
+   "pluginVersion": "12.3.1",
+   "targets": [
+    {
+     "query": "from(bucket: \"${bucket}\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"${measurement}\")\r\n |> filter(fn: (r) => r.device == \"${device}\")\r\n |> filter(fn: (r) => r._field == \"ph\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "influxdb",
+      "uid": "bf91u6s2l06wwd"
+     },
+     "hide": false,
+     "query": "from(bucket: \"${bucket}\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"${measurement}\")\r\n |> filter(fn: (r) => r.device == \"${device}\")\r\n |> filter(fn: (r) => r._field == \"ec\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
+     "refId": "B"
+    }
+   ],
+   "title": "pH vs EC — Nutrients & Acidity",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "influxdb",
+    "uid": "bf91u6s2l06wwd"
+   },
+   "description": "Cell density proxy (turbidity/NTU) vs pH over time.\n\nIncreasing turbidity = culture growing.\npH oscillation amplitude increases with denser cultures (more photosynthesis).\nDivergence between the two may indicate stress or nutrient limitation.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "barWidthFactor": 0.6,
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "showValues": false,
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": 0
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 61
+   },
+   "id": 32,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "hideZeros": false,
+     "mode": "single",
+     "sort": "none"
+    }
+   },
+   "pluginVersion": "12.3.1",
+   "targets": [
+    {
+     "query": "from(bucket: \"${bucket}\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"${measurement}\")\r\n |> filter(fn: (r) => r.device == \"${device}\")\r\n |> filter(fn: (r) => r._field == \"od\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "influxdb",
+      "uid": "bf91u6s2l06wwd"
+     },
+     "hide": false,
+     "query": "from(bucket: \"${bucket}\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"${measurement}\")\r\n |> filter(fn: (r) => r.device == \"${device}\")\r\n |> filter(fn: (r) => r._field == \"ph\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
+     "refId": "B"
+    }
+   ],
+   "title": "Turbidity vs pH — Growth & Photosynthesis",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "influxdb",
+    "uid": "bf91u6s2l06wwd"
+   },
+   "description": "Electrical conductivity over time.\n\nSlow decline = normal nutrient consumption.\nSudden spike = nutrient refill or medium replacement.\nUse this to plan refill intervals.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "barWidthFactor": 0.6,
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "showValues": false,
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": 0
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 68
+   },
+   "id": 33,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "hideZeros": false,
+     "mode": "single",
+     "sort": "none"
+    }
+   },
+   "pluginVersion": "12.3.1",
+   "targets": [
+    {
+     "query": "from(bucket: \"${bucket}\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"${measurement}\")\r\n |> filter(fn: (r) => r.device == \"${device}\")\r\n |> filter(fn: (r) => r._field == \"ec\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
+     "refId": "A"
+    }
+   ],
+   "title": "EC Trend — Nutrient Consumption",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "influxdb",
+    "uid": "bf91u6s2l06wwd"
+   },
+   "description": "Temperature and light intensity over time.\n\nTemperature should follow lux with a slight delay.\nLarge temperature swings during light hours may indicate poor thermal management.\nFlat temperature despite light = good heat dissipation.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "barWidthFactor": 0.6,
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "showValues": false,
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": 0
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 68
+   },
+   "id": 34,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "hideZeros": false,
+     "mode": "single",
+     "sort": "none"
+    }
+   },
+   "pluginVersion": "12.3.1",
+   "targets": [
+    {
+     "query": "from(bucket: \"${bucket}\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"${measurement}\")\r\n |> filter(fn: (r) => r.device == \"${device}\")\r\n |> filter(fn: (r) => r._field == \"temperature\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "influxdb",
+      "uid": "bf91u6s2l06wwd"
+     },
+     "hide": false,
+     "query": "from(bucket: \"${bucket}\")\r\n |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n |> filter(fn: (r) => r._measurement == \"${measurement}\")\r\n |> filter(fn: (r) => r.device == \"${device}\")\r\n |> filter(fn: (r) => r._field == \"lux\")\r\n |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\r\n",
+     "refId": "B"
+    }
+   ],
+   "title": "Temperature vs Lux — Thermal Effect of Light",
+   "type": "timeseries"
   }
  ],
  "preload": false,
@@ -1026,5 +1396,5 @@
  "timezone": "browser",
  "title": "Telemetry",
  "uid": "ad7t4dh",
- "version": 94
+ "version": 95
 }
