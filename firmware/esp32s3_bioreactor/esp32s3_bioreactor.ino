@@ -102,9 +102,9 @@ BH1750 lightMeter;
 
 // === BH1750 calibrazione ===
 // Fattore correttivo misurato confrontando con app lux meter su telefono:
-// lampada accesa: telefono 616 lux, sensore 202 lux → fattore 3.05
+// lampada accesa: telefono 724 lux, sensore 260 lux → fattore 2.77
 // Nota: warm white 3000K ha spettro diverso dalla luce bianca standard del BH1750.
-#define LUX_FACTOR 3.05f
+#define LUX_FACTOR 2.77f
 
 #define MAX31865_SCK  4
 #define MAX31865_MOSI 6
