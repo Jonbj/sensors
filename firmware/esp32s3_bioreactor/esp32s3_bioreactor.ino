@@ -1,11 +1,12 @@
 /*
-  ESP32-S3: PT100 via MAX31865 + BH1750 + pH SEN0169-V2 + EC DFR0300 + NTP + MQTT + Web dashboard
+  ESP32-S3: PT100 via MAX31865 + BH1750 + pH SEN0169-V2 + EC DFR0300 + Torbidità SEN0189 + NTP + MQTT + Web dashboard
 
   Hardware:
   - I2C su SDA=8, SCL=9 — BH1750
   - MAX31865 software SPI: SCK=IO4, MOSI=IO6, MISO=IO5, CS=IO7
   - pH SEN0169-V2: analogico su IO1
   - EC DFR0300: analogico su IO2 (da collegare)
+  - Torbidità SEN0189: analogico su IO3 (da collegare) → proxy OD
 
   Web dashboard: http://<IP_ESP32>/
   JSON live:     http://<IP_ESP32>/data
@@ -189,6 +190,28 @@ float readEC(float temperatureC) {
   return ec + EC_OFFSET;
 }
 
+// === Torbidità / OD proxy (SEN0189, analogico su IO3) ===
+// Il SEN0189 misura torbidità in NTU (uscita analogica inversa: più torbido = tensione più bassa).
+// Usato come proxy per OD — non è OD₇₅₀ vero ma correlato alla densità cellulare.
+// TURB_OFFSET: da calibrare con campioni a densità nota.
+// ⚠️ Non ancora collegato — restituisce NAN finché IO3 non è connesso.
+#define TURB_PIN      3
+#define TURB_OFFSET   0.0f
+bool turbConnected = false;  // impostare true quando collegato
+
+float readTurbidity() {
+  if (!turbConnected) return NAN;
+  int tmp[40];
+  for (int i = 0; i < 40; i++) { tmp[i] = analogRead(TURB_PIN); delay(2); }
+  float raw     = phAverageArray(tmp, 40);
+  float voltage = raw * 3.3f / 4095.0f;
+  float voltageScaled = voltage * (5.0f / 3.3f);
+  // SEN0189: NTU = -1120.4*V^2 + 5742.3*V - 4353.8 (formula DFRobot, valida 2.5–4.2V)
+  float ntu = -1120.4f * voltageScaled * voltageScaled + 5742.3f * voltageScaled - 4353.8f;
+  if (ntu < 0.0f) ntu = 0.0f;
+  return ntu + TURB_OFFSET;
+}
+
 // === WEB SERVER ===
 WebServer server(80);
 
@@ -197,12 +220,9 @@ struct SensorState {
   float temperature = NAN;
   float lux         = NAN;
   bool  temp_fault  = false;   // fault MAX31865
-  float ph          = NAN;     // reale — SEN0169-V2 su IO1
-  float ec_uScm    = NAN;     // reale — DFR0300 su IO2 (da collegare), µS/cm
-  // simulati (placeholder finché non colleghi i sensori reali)
-  float do_mgL   = 8.00f;
-  float biomass  = 0.45f;
-  float od       = 0.65f;
+  float ph       = NAN;   // reale — SEN0169-V2 su IO1
+  float ec_uScm  = NAN;   // reale — DFR0300 su IO2 (da collegare), µS/cm
+  float od       = NAN;   // reale — SEN0189 torbidità su IO3 (da collegare), proxy OD
   unsigned long ts  = 0;
   bool  wifi_ok     = false;
   bool  mqtt_ok     = false;
@@ -233,9 +253,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   .temp    .value{color:#ff7043}
   .lux     .value{color:#fdd835}
   .ph      .value{color:#42a5f5}
-  .do      .value{color:#66bb6a}
-  .biomass .value{color:#ab47bc}
-  .od      .value{color:#26c6da}
+  .od      .value{color:#ab47bc}
   .ec      .value{color:#26c6da}
   .status-bar{margin-top:20px;display:flex;gap:12px;flex-wrap:wrap;font-size:.75rem;align-items:center}
   .badge{padding:4px 10px;border-radius:20px;background:#1a1d27}
@@ -265,25 +283,15 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
     <div class="value" id="ph">—</div>
     <div class="unit">&nbsp;</div>
   </div>
-  <div class="card do">
-    <div class="label">O₂ disciolto</div>
-    <div class="value" id="do">—</div>
-    <div class="unit">mg/L &nbsp;sim</div>
-  </div>
-  <div class="card biomass">
-    <div class="label">Biomassa</div>
-    <div class="value" id="biomass">—</div>
-    <div class="unit">g/L &nbsp;sim</div>
-  </div>
-  <div class="card od">
-    <div class="label">OD<sub>750</sub></div>
-    <div class="value" id="od">—</div>
-    <div class="unit">sim</div>
-  </div>
   <div class="card ec">
     <div class="label">Conducibilità (EC)</div>
     <div class="value" id="ec">—</div>
     <div class="unit">µS/cm</div>
+  </div>
+  <div class="card od">
+    <div class="label">Torbidità (OD proxy)</div>
+    <div class="value" id="od">—</div>
+    <div class="unit">NTU</div>
   </div>
 </div>
 
@@ -320,12 +328,10 @@ async function refresh() {
       tempEl.className = 'value';
     }
 
-    document.getElementById('lux').textContent      = d.lux !== null ? fmt(d.lux, 0) : '—';
-    document.getElementById('ph').textContent       = fmt(d.ph, 2);
-    document.getElementById('do').textContent       = fmt(d.do, 2);
-    document.getElementById('biomass').textContent  = fmt(d.biomass, 3);
-    document.getElementById('od').textContent       = fmt(d.od, 3);
-    document.getElementById('ec').textContent = d.ec !== null ? fmt(d.ec, 0) : '—';
+    document.getElementById('lux').textContent = d.lux !== null ? fmt(d.lux, 0) : '—';
+    document.getElementById('ph').textContent  = fmt(d.ph, 2);
+    document.getElementById('ec').textContent  = d.ec !== null ? fmt(d.ec, 0) : '—';
+    document.getElementById('od').textContent  = d.od !== null ? fmt(d.od, 0) : '—';
 
     badge(document.getElementById('b-wifi'), d.wifi, 'WiFi');
     badge(document.getElementById('b-mqtt'), d.mqtt, 'MQTT');
@@ -376,18 +382,19 @@ void handleData() {
   else
     snprintf(ph_str, sizeof(ph_str), "%.2f", state.ph);
 
-  char ec_str[12];
-  if (isnan(state.ec_uScm))
-    snprintf(ec_str, sizeof(ec_str), "null");
-  else
-    snprintf(ec_str, sizeof(ec_str), "%.1f", state.ec_uScm);
+  char ec_str[12], od_str[12];
+  if (isnan(state.ec_uScm)) snprintf(ec_str, sizeof(ec_str), "null");
+  else snprintf(ec_str, sizeof(ec_str), "%.1f", state.ec_uScm);
+
+  if (isnan(state.od)) snprintf(od_str, sizeof(od_str), "null");
+  else snprintf(od_str, sizeof(od_str), "%.1f", state.od);
 
   snprintf(buf, sizeof(buf),
     "{\"temperature\":%s,\"lux\":%s,\"temp_fault\":%s"
-    ",\"ph\":%s,\"ec\":%s,\"do\":%.2f,\"biomass\":%.3f,\"od\":%.3f"
+    ",\"ph\":%s,\"ec\":%s,\"od\":%s"
     ",\"ts\":%lu,\"wifi\":%s,\"mqtt\":%s,\"ntp\":%s,\"rssi\":%d}",
     t_str, l_str, state.temp_fault ? "true" : "false",
-    ph_str, ec_str, state.do_mgL, state.biomass, state.od,
+    ph_str, ec_str, od_str,
     state.ts,
     state.wifi_ok ? "true" : "false",
     state.mqtt_ok ? "true" : "false",
@@ -402,7 +409,7 @@ void handleData() {
 #define BUFFER_SIZE 50
 struct SensorMessage {
   unsigned long ts;
-  float lux, temperature, ph, ec_uScm, do_mgL, biomass, od;
+  float lux, temperature, ph, ec_uScm, od;
 };
 SensorMessage mqttBuffer[BUFFER_SIZE];
 int bufferStart = 0, bufferCount = 0;
@@ -426,34 +433,11 @@ void reconnectMQTT() {
   }
 }
 
-// === SIMULATORE ===
-static unsigned long sim_last_ts = 0;
-static float clampf(float x, float lo, float hi) {
-  return x < lo ? lo : x > hi ? hi : x;
-}
-void updateSimulation(unsigned long ts, const struct tm& ti, float lux) {
-  if (sim_last_ts == 0) { sim_last_ts = ts; return; }
-  long dt = (long)ts - (long)sim_last_ts;
-  if (dt <= 0) return;
-  if (dt > 3600) dt = 3600;
-  sim_last_ts = ts;
-  float dt_h = dt / 3600.0f;
-  bool light_on = (ti.tm_hour >= 6 && ti.tm_hour < 22);
-  float luxF = clampf(lux / 300.0f, 0.0f, 1.0f);
-  float lF   = light_on ? (0.6f + 0.4f * luxF) : 0.0f;
-
-  state.do_mgL += (6.0f + 6.0f * lF - state.do_mgL) * clampf(0.9f * dt_h, 0.02f, 0.35f);
-  state.do_mgL  = clampf(state.do_mgL, 2.0f, 18.0f);
-
-  state.biomass += ((0.0015f + 0.0025f * lF) - (light_on ? 0.0002f : 0.0008f)) * dt_h;
-  state.biomass  = clampf(state.biomass, 0.05f, 5.0f);
-
-  state.od = clampf(state.biomass * 1.45f, 0.05f, 8.0f);
-}
+// Simulatore rimosso — tutti i KPI sono ora reali o non misurati.
 
 // === BUFFER MQTT helpers ===
 void addToBuffer(unsigned long ts, float lux, float temp) {
-  SensorMessage m = {ts, lux, temp, state.ph, state.ec_uScm, state.do_mgL, state.biomass, state.od};
+  SensorMessage m = {ts, lux, temp, state.ph, state.ec_uScm, state.od};
   if (bufferCount < BUFFER_SIZE) {
     mqttBuffer[(bufferStart + bufferCount++) % BUFFER_SIZE] = m;
   } else {
@@ -465,13 +449,15 @@ void flushBufferMQTT() {
   while (bufferCount > 0 && mqttClient.connected()) {
     SensorMessage &m = mqttBuffer[bufferStart];
     char payload[320];
-    char ec_str[12];
+    char ec_str[12], od_str[12];
     if (isnan(m.ec_uScm)) snprintf(ec_str, sizeof(ec_str), "null");
     else snprintf(ec_str, sizeof(ec_str), "%.1f", m.ec_uScm);
+    if (isnan(m.od)) snprintf(od_str, sizeof(od_str), "null");
+    else snprintf(od_str, sizeof(od_str), "%.1f", m.od);
     snprintf(payload, sizeof(payload),
       "{\"ts\":%lu,\"temperature\":%.2f,\"lux\":%.1f,\"ph\":%.2f"
-      ",\"ec\":%s,\"do\":%.2f,\"biomass\":%.3f,\"od\":%.3f}",
-      m.ts, m.temperature, m.lux, m.ph, ec_str, m.do_mgL, m.biomass, m.od);
+      ",\"ec\":%s,\"od\":%s}",
+      m.ts, m.temperature, m.lux, m.ph, ec_str, od_str);
     Serial.print("📤 MQTT → "); Serial.println(payload);
     if (mqttClient.publish(mqtt_topic, payload)) {
       bufferStart = (bufferStart + 1) % BUFFER_SIZE;
@@ -550,9 +536,10 @@ void loop() {
     state.ntp_ok = getLocalTime(&timeinfo, 500);
     if (state.ntp_ok) state.ts = (unsigned long)mktime(&timeinfo);
 
-    state.lux    = lightMeter.readLightLevel();
-    state.ph     = readPH();
+    state.lux     = lightMeter.readLightLevel();
+    state.ph      = readPH();
     state.ec_uScm = readEC(isnan(state.temperature) ? 25.0f : state.temperature);
+    state.od      = readTurbidity();
 
     // MAX31865: controlla fault prima di leggere la temperatura
     uint8_t fault = max31865.readFault();
@@ -577,14 +564,13 @@ void loop() {
     state.mqtt_ok = mqttClient.connected();
     state.rssi    = state.wifi_ok ? WiFi.RSSI() : -127;
 
-    if (state.ntp_ok) updateSimulation(state.ts, timeinfo, state.lux);
-
-    Serial.printf("T=%.2f%s Lux=%.1f pH=%.2f EC=%.0f DO=%.2f Bio=%.3f | WiFi=%s(%ddBm) MQTT=%s NTP=%s\n",
+    Serial.printf("T=%.2f%s Lux=%.1f pH=%.2f EC=%.0f OD(NTU)=%.0f | WiFi=%s(%ddBm) MQTT=%s NTP=%s\n",
       state.temp_fault ? 0.0f : state.temperature,
       state.temp_fault ? "(FAULT)" : "",
-      state.lux, isnan(state.ph) ? 0.0f : state.ph,
+      state.lux,
+      isnan(state.ph) ? 0.0f : state.ph,
       isnan(state.ec_uScm) ? 0.0f : state.ec_uScm,
-      state.do_mgL, state.biomass,
+      isnan(state.od) ? 0.0f : state.od,
       state.wifi_ok ? "OK" : "NO", state.rssi,
       state.mqtt_ok ? "OK" : "NO",
       state.ntp_ok  ? "OK" : "NO");
