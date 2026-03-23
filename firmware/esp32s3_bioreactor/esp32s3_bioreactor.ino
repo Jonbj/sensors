@@ -1,9 +1,11 @@
 /*
-  ESP32-S3: PT100 via MAX31865 + BH1750 + NTP + MQTT + Web dashboard
+  ESP32-S3: PT100 via MAX31865 + BH1750 + pH SEN0169-V2 + EC DFR0300 + NTP + MQTT + Web dashboard
 
   Hardware:
   - I2C su SDA=8, SCL=9 — BH1750
   - MAX31865 software SPI: SCK=IO4, MOSI=IO6, MISO=IO5, CS=IO7
+  - pH SEN0169-V2: analogico su IO1
+  - EC DFR0300: analogico su IO2 (da collegare)
 
   Web dashboard: http://<IP_ESP32>/
   JSON live:     http://<IP_ESP32>/data
@@ -105,6 +107,88 @@ BH1750 lightMeter;
 #define RREF     430.0
 Adafruit_MAX31865 max31865(MAX31865_CS, MAX31865_MOSI, MAX31865_MISO, MAX31865_SCK);
 
+// === pH (SEN0169-V2, uscita analogica su IO1) ===
+//
+// NOTA SCALA: il SEN0169 è progettato per uscita 0-5V (Arduino 5V).
+// L'ESP32 legge 0-3.3V → la tensione va riscalata a 5V prima di calcolare il pH.
+//
+// Calibrazione: regola PH_OFFSET dopo aver misurato una soluzione buffer nota (pH 7.0).
+// Es: se legge 7.3 con buffer pH 7.0 → PH_OFFSET = -0.3
+#define PH_PIN     1
+#define PH_OFFSET  0.0f   // da calibrare con soluzione buffer pH 7.0
+
+// Algoritmo DFRobot ufficiale: 40 campioni, scarta il 25% outlier alto e basso,
+// fa media del resto — robusto contro spike e rumore ADC.
+#define PH_ARRAY_LEN 40
+int phArray[PH_ARRAY_LEN];
+int phArrayIndex = 0;
+
+float phAverageArray(int* arr, int len) {
+  // Insertion sort
+  for (int i = 1; i < len; i++) {
+    int key = arr[i], j = i - 1;
+    while (j >= 0 && arr[j] > key) { arr[j + 1] = arr[j]; j--; }
+    arr[j + 1] = key;
+  }
+  // Scarta il 25% più basso e più alto
+  long sum = 0;
+  int from = len / 4, to = len - len / 4;
+  for (int i = from; i < to; i++) sum += arr[i];
+  return (float)sum / (to - from);
+}
+
+float readPH() {
+  phArray[phArrayIndex++] = analogRead(PH_PIN);
+  if (phArrayIndex >= PH_ARRAY_LEN) phArrayIndex = 0;
+
+  // Copia il buffer per non alterare l'originale durante il sort
+  int tmp[PH_ARRAY_LEN];
+  memcpy(tmp, phArray, sizeof(phArray));
+
+  float raw     = phAverageArray(tmp, PH_ARRAY_LEN);
+  float voltage = raw * 3.3f / 4095.0f;
+  // Riscala a 5V (scala originale del SEN0169)
+  float voltageScaled = voltage * (5.0f / 3.3f);
+  return 7.0f + ((2.5f - voltageScaled) / 0.18f) + PH_OFFSET;
+}
+
+// === EC (DFR0300, uscita analogica su IO2) ===
+// NOTA: DFR0300 è progettato per 5V — stessa correzione di scala del pH.
+// La conversione tensione→EC dipende dalla temperatura (compensazione a 25°C).
+// EC_OFFSET: da calibrare con soluzione standard (es. 1413 µS/cm).
+// Formula: EC (µS/cm) = (voltageScaled / 0.4) * 1000  (lineare, valida ~0–20 mS/cm)
+// ⚠️ Il sensore NON è ancora collegato — restituisce NAN finché IO2 non è connesso.
+#define EC_PIN    2
+#define EC_OFFSET 0.0f  // da calibrare
+
+#define EC_ARRAY_LEN 40
+int ecArray[EC_ARRAY_LEN];
+int ecArrayIndex = 0;
+bool ecConnected = false;  // impostare true quando il sensore è fisicamente collegato
+
+float readEC(float temperatureC) {
+  if (!ecConnected) return NAN;
+
+  ecArray[ecArrayIndex++] = analogRead(EC_PIN);
+  if (ecArrayIndex >= EC_ARRAY_LEN) ecArrayIndex = 0;
+
+  int tmp[EC_ARRAY_LEN];
+  memcpy(tmp, ecArray, sizeof(ecArray));
+
+  float raw     = phAverageArray(tmp, EC_ARRAY_LEN);  // stessa funzione di averaging
+  float voltage = raw * 3.3f / 4095.0f;
+  float voltageScaled = voltage * (5.0f / 3.3f);
+
+  // Conversione tensione → EC grezza
+  float ecRaw = (voltageScaled / 0.4f) * 1000.0f;  // µS/cm a 25°C
+
+  // Compensazione temperatura (coefficiente standard 2%/°C rispetto a 25°C)
+  float tempCoeff = 1.0f + 0.02f * (temperatureC - 25.0f);
+  float ec = ecRaw / tempCoeff;
+
+  return ec + EC_OFFSET;
+}
+
 // === WEB SERVER ===
 WebServer server(80);
 
@@ -113,12 +197,12 @@ struct SensorState {
   float temperature = NAN;
   float lux         = NAN;
   bool  temp_fault  = false;   // fault MAX31865
+  float ph          = NAN;     // reale — SEN0169-V2 su IO1
+  float ec_uScm    = NAN;     // reale — DFR0300 su IO2 (da collegare), µS/cm
   // simulati (placeholder finché non colleghi i sensori reali)
-  float ph       = 10.00f;
   float do_mgL   = 8.00f;
   float biomass  = 0.45f;
   float od       = 0.65f;
-  float nitrates = 180.0f;
   unsigned long ts  = 0;
   bool  wifi_ok     = false;
   bool  mqtt_ok     = false;
@@ -152,7 +236,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   .do      .value{color:#66bb6a}
   .biomass .value{color:#ab47bc}
   .od      .value{color:#26c6da}
-  .nitrates .value{color:#ff7043}
+  .ec      .value{color:#26c6da}
   .status-bar{margin-top:20px;display:flex;gap:12px;flex-wrap:wrap;font-size:.75rem;align-items:center}
   .badge{padding:4px 10px;border-radius:20px;background:#1a1d27}
   .badge.ok{color:#66bb6a}
@@ -179,7 +263,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   <div class="card ph">
     <div class="label">pH</div>
     <div class="value" id="ph">—</div>
-    <div class="unit">sim</div>
+    <div class="unit">&nbsp;</div>
   </div>
   <div class="card do">
     <div class="label">O₂ disciolto</div>
@@ -196,10 +280,10 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
     <div class="value" id="od">—</div>
     <div class="unit">sim</div>
   </div>
-  <div class="card nitrates">
-    <div class="label">Nitrati</div>
-    <div class="value" id="nitrates">—</div>
-    <div class="unit">mg/L &nbsp;sim</div>
+  <div class="card ec">
+    <div class="label">Conducibilità (EC)</div>
+    <div class="value" id="ec">—</div>
+    <div class="unit">µS/cm</div>
   </div>
 </div>
 
@@ -241,7 +325,7 @@ async function refresh() {
     document.getElementById('do').textContent       = fmt(d.do, 2);
     document.getElementById('biomass').textContent  = fmt(d.biomass, 3);
     document.getElementById('od').textContent       = fmt(d.od, 3);
-    document.getElementById('nitrates').textContent = fmt(d.nitrates, 1);
+    document.getElementById('ec').textContent = d.ec !== null ? fmt(d.ec, 0) : '—';
 
     badge(document.getElementById('b-wifi'), d.wifi, 'WiFi');
     badge(document.getElementById('b-mqtt'), d.mqtt, 'MQTT');
@@ -276,7 +360,7 @@ void handleRoot() {
 void handleData() {
   char buf[384];
   // Usa "null" per valori NaN — JSON valido e gestibile dal browser
-  char t_str[12], l_str[12];
+  char t_str[12], l_str[12], ph_str[12];
   if (isnan(state.temperature) || state.temp_fault)
     snprintf(t_str, sizeof(t_str), "null");
   else
@@ -287,12 +371,23 @@ void handleData() {
   else
     snprintf(l_str, sizeof(l_str), "%.1f", state.lux);
 
+  if (isnan(state.ph))
+    snprintf(ph_str, sizeof(ph_str), "null");
+  else
+    snprintf(ph_str, sizeof(ph_str), "%.2f", state.ph);
+
+  char ec_str[12];
+  if (isnan(state.ec_uScm))
+    snprintf(ec_str, sizeof(ec_str), "null");
+  else
+    snprintf(ec_str, sizeof(ec_str), "%.1f", state.ec_uScm);
+
   snprintf(buf, sizeof(buf),
     "{\"temperature\":%s,\"lux\":%s,\"temp_fault\":%s"
-    ",\"ph\":%.2f,\"do\":%.2f,\"biomass\":%.3f,\"od\":%.3f,\"nitrates\":%.1f"
+    ",\"ph\":%s,\"ec\":%s,\"do\":%.2f,\"biomass\":%.3f,\"od\":%.3f"
     ",\"ts\":%lu,\"wifi\":%s,\"mqtt\":%s,\"ntp\":%s,\"rssi\":%d}",
     t_str, l_str, state.temp_fault ? "true" : "false",
-    state.ph, state.do_mgL, state.biomass, state.od, state.nitrates,
+    ph_str, ec_str, state.do_mgL, state.biomass, state.od,
     state.ts,
     state.wifi_ok ? "true" : "false",
     state.mqtt_ok ? "true" : "false",
@@ -307,7 +402,7 @@ void handleData() {
 #define BUFFER_SIZE 50
 struct SensorMessage {
   unsigned long ts;
-  float lux, temperature, ph, do_mgL, biomass, od, nitrates;
+  float lux, temperature, ph, ec_uScm, do_mgL, biomass, od;
 };
 SensorMessage mqttBuffer[BUFFER_SIZE];
 int bufferStart = 0, bufferCount = 0;
@@ -347,14 +442,8 @@ void updateSimulation(unsigned long ts, const struct tm& ti, float lux) {
   float luxF = clampf(lux / 300.0f, 0.0f, 1.0f);
   float lF   = light_on ? (0.6f + 0.4f * luxF) : 0.0f;
 
-  state.ph += (9.70f + 0.60f * lF - state.ph) * clampf(0.8f * dt_h, 0.02f, 0.25f);
-  state.ph  = clampf(state.ph, 9.2f, 10.8f);
-
   state.do_mgL += (6.0f + 6.0f * lF - state.do_mgL) * clampf(0.9f * dt_h, 0.02f, 0.35f);
   state.do_mgL  = clampf(state.do_mgL, 2.0f, 18.0f);
-
-  state.nitrates -= (0.30f + 0.40f * lF) * dt_h;
-  state.nitrates  = clampf(state.nitrates, 0.0f, 5000.0f);
 
   state.biomass += ((0.0015f + 0.0025f * lF) - (light_on ? 0.0002f : 0.0008f)) * dt_h;
   state.biomass  = clampf(state.biomass, 0.05f, 5.0f);
@@ -364,7 +453,7 @@ void updateSimulation(unsigned long ts, const struct tm& ti, float lux) {
 
 // === BUFFER MQTT helpers ===
 void addToBuffer(unsigned long ts, float lux, float temp) {
-  SensorMessage m = {ts, lux, temp, state.ph, state.do_mgL, state.biomass, state.od, state.nitrates};
+  SensorMessage m = {ts, lux, temp, state.ph, state.ec_uScm, state.do_mgL, state.biomass, state.od};
   if (bufferCount < BUFFER_SIZE) {
     mqttBuffer[(bufferStart + bufferCount++) % BUFFER_SIZE] = m;
   } else {
@@ -376,10 +465,13 @@ void flushBufferMQTT() {
   while (bufferCount > 0 && mqttClient.connected()) {
     SensorMessage &m = mqttBuffer[bufferStart];
     char payload[320];
+    char ec_str[12];
+    if (isnan(m.ec_uScm)) snprintf(ec_str, sizeof(ec_str), "null");
+    else snprintf(ec_str, sizeof(ec_str), "%.1f", m.ec_uScm);
     snprintf(payload, sizeof(payload),
       "{\"ts\":%lu,\"temperature\":%.2f,\"lux\":%.1f,\"ph\":%.2f"
-      ",\"do\":%.2f,\"biomass\":%.3f,\"od\":%.3f,\"nitrates\":%.1f}",
-      m.ts, m.temperature, m.lux, m.ph, m.do_mgL, m.biomass, m.od, m.nitrates);
+      ",\"ec\":%s,\"do\":%.2f,\"biomass\":%.3f,\"od\":%.3f}",
+      m.ts, m.temperature, m.lux, m.ph, ec_str, m.do_mgL, m.biomass, m.od);
     Serial.print("📤 MQTT → "); Serial.println(payload);
     if (mqttClient.publish(mqtt_topic, payload)) {
       bufferStart = (bufferStart + 1) % BUFFER_SIZE;
@@ -458,7 +550,9 @@ void loop() {
     state.ntp_ok = getLocalTime(&timeinfo, 500);
     if (state.ntp_ok) state.ts = (unsigned long)mktime(&timeinfo);
 
-    state.lux = lightMeter.readLightLevel();
+    state.lux    = lightMeter.readLightLevel();
+    state.ph     = readPH();
+    state.ec_uScm = readEC(isnan(state.temperature) ? 25.0f : state.temperature);
 
     // MAX31865: controlla fault prima di leggere la temperatura
     uint8_t fault = max31865.readFault();
@@ -485,10 +579,12 @@ void loop() {
 
     if (state.ntp_ok) updateSimulation(state.ts, timeinfo, state.lux);
 
-    Serial.printf("T=%.2f%s Lux=%.1f pH=%.2f DO=%.2f NO3=%.1f Bio=%.3f | WiFi=%s(%ddBm) MQTT=%s NTP=%s\n",
+    Serial.printf("T=%.2f%s Lux=%.1f pH=%.2f EC=%.0f DO=%.2f Bio=%.3f | WiFi=%s(%ddBm) MQTT=%s NTP=%s\n",
       state.temp_fault ? 0.0f : state.temperature,
       state.temp_fault ? "(FAULT)" : "",
-      state.lux, state.ph, state.do_mgL, state.nitrates, state.biomass,
+      state.lux, isnan(state.ph) ? 0.0f : state.ph,
+      isnan(state.ec_uScm) ? 0.0f : state.ec_uScm,
+      state.do_mgL, state.biomass,
       state.wifi_ok ? "OK" : "NO", state.rssi,
       state.mqtt_ok ? "OK" : "NO",
       state.ntp_ok  ? "OK" : "NO");
