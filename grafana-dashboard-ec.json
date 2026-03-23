@@ -37,7 +37,7 @@
    "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
    "id": 19,
    "panels": [],
-   "title": "REACTOR STATUS (Now) Valori istantanei – "come sta adesso il reattore"",
+   "title": "REACTOR STATUS (Now) Valori istantanei - come sta adesso il reattore",
    "type": "row"
   },
   {
