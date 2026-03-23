@@ -171,7 +171,7 @@ float readPH() {
 #define EC_ARRAY_LEN 40
 int ecArray[EC_ARRAY_LEN];
 int ecArrayIndex = 0;
-bool ecConnected = false;  // impostare true quando il sensore è fisicamente collegato
+bool ecConnected = true;  // sonda collegata su IO2
 
 float readEC(float temperatureC) {
   if (!ecConnected) return NAN;
@@ -182,18 +182,22 @@ float readEC(float temperatureC) {
   int tmp[EC_ARRAY_LEN];
   memcpy(tmp, ecArray, sizeof(ecArray));
 
-  float raw     = phAverageArray(tmp, EC_ARRAY_LEN);  // stessa funzione di averaging
+  float raw     = phAverageArray(tmp, EC_ARRAY_LEN);
   float voltage = raw * 3.3f / 4095.0f;
-  float voltageScaled = voltage * (5.0f / 3.3f);
 
-  // Conversione tensione → EC grezza
-  float ecRaw = (voltageScaled / 0.4f) * 1000.0f;  // µS/cm a 25°C
+  // DFR0300 alimentato a 3.3V: uscita già in range 0–3.3V, nessuna riscalatura.
+  // Formula DFRobot per alimentazione 3.3V (K=1):
+  // EC (mS/cm) = (133.42 * V^3 - 255.86 * V^2 + 857.39 * V) * 0.5  (empirica)
+  float ecRaw = (133.42f * voltage * voltage * voltage
+               - 255.86f * voltage * voltage
+               + 857.39f * voltage) * 0.5f;  // mS/cm a 25°C
 
-  // Compensazione temperatura (coefficiente standard 2%/°C rispetto a 25°C)
+  // Compensazione temperatura (2%/°C rispetto a 25°C)
   float tempCoeff = 1.0f + 0.02f * (temperatureC - 25.0f);
-  float ec = ecRaw / tempCoeff;
+  float ec = ecRaw / tempCoeff;  // mS/cm compensata
 
-  return ec + EC_OFFSET;
+  // Converti in µS/cm (* 1000) e applica offset calibrazione
+  return (ec * 1000.0f) + EC_OFFSET;
 }
 
 // === Torbidità / OD proxy (SEN0189, analogico su IO3) ===
