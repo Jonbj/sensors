@@ -379,7 +379,7 @@ async function saveLedConfig() {
   try {
     const r = await fetch('/ledconfig?' + params.toString());
     const j = await r.json();
-    if (j.ok) saveStatus.textContent = 'Configurazione salvata';
+    if (j.ok) saveStatus.textContent = 'Configurazione salvata (rampa=' + j.ramp_minutes + ', verify=' + j.verifyRamp + ')';
     else saveStatus.textContent = 'Salvataggio fallito';
   } catch(e) {
     saveStatus.textContent = 'Errore salvataggio';
@@ -448,20 +448,30 @@ void handleLedConfig() {
   if (userEditedFields && incomingProfile != "custom") state.led_profile = "custom";
   else state.led_profile = incomingProfile;
 
+  Serial.printf("LED config richiesta -> profile=%s ramp=%d\n", state.led_profile.c_str(), state.ramp_minutes);
   saveLedConfig();
+
+  preferences.begin("bioreactor", true);
+  int verifyRamp = preferences.getInt("ramp_min", -999);
+  String verifyProfile = preferences.getString("profile", "missing");
+  preferences.end();
+
   applyLedControl();
-  Serial.printf("LED config salvata -> profile=%s start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%\n",
+  Serial.printf("LED config salvata -> profile=%s start=%s end=%s ramp=%d verifyRamp=%d verifyProfile=%s day=%d night=%d soft=%.1f hard=%.1f boost=%d%%\n",
     state.led_profile.c_str(),
     minToHHMMString(state.day_start_min).c_str(),
     minToHHMMString(state.day_end_min).c_str(),
     state.ramp_minutes,
+    verifyRamp,
+    verifyProfile.c_str(),
     state.led_day_pwm,
     state.led_night_pwm,
     state.temp_soft_limit_c,
     state.temp_hard_limit_c,
     state.midday_boost_pct);
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.send(200, "application/json", "{\"ok\":true}");
+  String resp = String("{\"ok\":true,\"ramp_minutes\":") + state.ramp_minutes + ",\"verifyRamp\":" + verifyRamp + ",\"profile\":\"" + state.led_profile + "\",\"verifyProfile\":\"" + verifyProfile + "\"}";
+  server.send(200, "application/json", resp);
 }
 
 void handleLedMode() {
