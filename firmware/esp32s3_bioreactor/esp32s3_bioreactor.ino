@@ -335,24 +335,28 @@ async function refresh() {
   if (document.activeElement !== slider) slider.value = d.led_pwm ?? 0;
   sliderValue.textContent = slider.value;
 
-  if (document.activeElement.id !== 'ledProfile') document.getElementById('ledProfile').value = d.led_profile || 'custom';
-  if (document.activeElement.id !== 'dayStart') document.getElementById('dayStart').value = minToHHMM(d.day_start_min || 480);
-  if (document.activeElement.id !== 'dayEnd') document.getElementById('dayEnd').value = minToHHMM(d.day_end_min || 1200);
-  if (document.activeElement.id !== 'rampMinutes') document.getElementById('rampMinutes').value = d.ramp_minutes ?? 30;
-  if (document.activeElement.id !== 'dayPwm') document.getElementById('dayPwm').value = d.led_day_pwm ?? 180;
-  if (document.activeElement.id !== 'nightPwm') document.getElementById('nightPwm').value = d.led_night_pwm ?? 0;
-  if (document.activeElement.id !== 'tempSoft') document.getElementById('tempSoft').value = d.temp_soft_limit_c ?? 30.0;
-  if (document.activeElement.id !== 'tempHard') document.getElementById('tempHard').value = d.temp_hard_limit_c ?? 32.0;
-  if (document.activeElement.id !== 'middayBoost') document.getElementById('middayBoost').value = d.midday_boost_pct ?? 100;
+  if (Date.now() > suspendFieldRefreshUntil) {
+    if (document.activeElement.id !== 'ledProfile') document.getElementById('ledProfile').value = d.led_profile || 'custom';
+    if (document.activeElement.id !== 'dayStart') document.getElementById('dayStart').value = minToHHMM(d.day_start_min || 480);
+    if (document.activeElement.id !== 'dayEnd') document.getElementById('dayEnd').value = minToHHMM(d.day_end_min || 1200);
+    if (document.activeElement.id !== 'rampMinutes') document.getElementById('rampMinutes').value = d.ramp_minutes ?? 30;
+    if (document.activeElement.id !== 'dayPwm') document.getElementById('dayPwm').value = d.led_day_pwm ?? 180;
+    if (document.activeElement.id !== 'nightPwm') document.getElementById('nightPwm').value = d.led_night_pwm ?? 0;
+    if (document.activeElement.id !== 'tempSoft') document.getElementById('tempSoft').value = d.temp_soft_limit_c ?? 30.0;
+    if (document.activeElement.id !== 'tempHard') document.getElementById('tempHard').value = d.temp_hard_limit_c ?? 32.0;
+    if (document.activeElement.id !== 'middayBoost') document.getElementById('middayBoost').value = d.midday_boost_pct ?? 100;
+  }
 }
 const slider = document.getElementById('ledSlider');
 const sliderValue = document.getElementById('ledSliderValue');
 const autoChk = document.getElementById('ledAuto');
 let ledDebounce = null;
+let suspendFieldRefreshUntil = 0;
 slider.addEventListener('input', () => { sliderValue.textContent = slider.value; clearTimeout(ledDebounce); ledDebounce = setTimeout(() => setLedPwm(slider.value), 120); });
 autoChk.addEventListener('change', async () => { await fetch('/ledmode?auto=' + (autoChk.checked ? '1' : '0')); setTimeout(refresh, 150); });
 async function setLedPwm(v) { await fetch('/led?duty=' + encodeURIComponent(v)); setTimeout(refresh, 120); }
 async function saveLedConfig() {
+  suspendFieldRefreshUntil = Date.now() + 4000;
   const params = new URLSearchParams({
     profile: document.getElementById('ledProfile').value,
     dayStart: document.getElementById('dayStart').value,
@@ -428,8 +432,9 @@ void handleLedConfig() {
   if (server.hasArg("tempHard")) state.temp_hard_limit_c = constrain(server.arg("tempHard").toFloat(), 10.0f, 50.0f);
   if (server.hasArg("middayBoost")) state.midday_boost_pct = constrain(server.arg("middayBoost").toInt(), 50, 150);
   saveLedConfig();
+  loadLedConfig();
   applyLedControl();
-  Serial.printf("LED config salvata -> start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%\n", minToHHMMString(state.day_start_min).c_str(), minToHHMMString(state.day_end_min).c_str(), state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.temp_soft_limit_c, state.temp_hard_limit_c, state.midday_boost_pct);
+  Serial.printf("LED config salvata -> profile=%s start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%\n", state.led_profile.c_str(), minToHHMMString(state.day_start_min).c_str(), minToHHMMString(state.day_end_min).c_str(), state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.temp_soft_limit_c, state.temp_hard_limit_c, state.midday_boost_pct);
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", "{\"ok\":true}");
 }
