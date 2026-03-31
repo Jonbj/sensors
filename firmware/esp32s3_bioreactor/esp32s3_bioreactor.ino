@@ -7,6 +7,7 @@
   - pH SEN0169-V2: analogico su IO1
   - EC DFR0300: analogico su IO2 (da collegare)
   - Torbidità SEN0189: analogico su IO3 (da collegare) → proxy OD
+  - MOSFET dimming LED: PWM su IO10
 
   Web dashboard: http://<IP_ESP32>/
   JSON live:     http://<IP_ESP32>/data
@@ -21,6 +22,22 @@
 #include <BH1750.h>
 #include <time.h>
 #include <PubSubClient.h>
+#include <Preferences.h>
+
+// === LED PWM / MOSFET ===
+#define LED_PWM_PIN       10
+#define LED_PWM_FREQ      1000
+#define LED_PWM_RES_BITS  8
+#define LED_PWM_TEST_MODE false
+#define LED_PWM_DEFAULT   128
+#define LED_MODE_AUTO      false
+#define DAY_START_MIN      (8 * 60)
+#define DAY_END_MIN        (20 * 60)
+#define RAMP_MINUTES       30
+#define LED_DAY_PWM        180
+#define LED_NIGHT_PWM      0
+
+Preferences preferences;
 
 // === TLS CA (Let's Encrypt ISRG Root X1) ===
 static const char LE_ROOT_CA[] PROGMEM = R"EOF(
@@ -58,9 +75,6 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
 )EOF";
 
 // === CREDENTIALS ===
-// Le credenziali reali vanno in secrets.h (non versionato).
-// I fallback hardcoded sono rimossi per sicurezza: senza secrets.h il firmware
-// non si connette al WiFi, ma compila e gira comunque (offline).
 #ifdef __has_include
 #  if __has_include("secrets.h")
 #    include "secrets.h"
@@ -92,18 +106,11 @@ WiFiClientSecure espClient;
 PubSubClient     mqttClient(espClient);
 
 // === NTP ===
-// Timezone POSIX string per Europa/Roma: CET-1CEST,M3.5.0,M10.5.0/3
-// Gestisce correttamente il cambio ora legale (DST) automaticamente.
 #define TZ_EUROPE_ROME "CET-1CEST,M3.5.0,M10.5.0/3"
 const char* ntpServer = "pool.ntp.org";
 
 // === SENSORI ===
 BH1750 lightMeter;
-
-// === BH1750 calibrazione ===
-// Fattore correttivo misurato confrontando con app lux meter su telefono:
-// lampada accesa: telefono 724 lux, sensore 260 lux → fattore 2.77
-// Nota: warm white 3000K ha spettro diverso dalla luce bianca standard del BH1750.
 #define LUX_FACTOR 2.77f
 
 #define MAX31865_SCK  4
@@ -114,30 +121,18 @@ BH1750 lightMeter;
 #define RREF     430.0
 Adafruit_MAX31865 max31865(MAX31865_CS, MAX31865_MOSI, MAX31865_MISO, MAX31865_SCK);
 
-// === pH (SEN0169-V2, uscita analogica su IO1) ===
-//
-// NOTA SCALA: il SEN0169 è progettato per uscita 0-5V (Arduino 5V).
-// L'ESP32 legge 0-3.3V → la tensione va riscalata a 5V prima di calcolare il pH.
-//
-// Calibrazione: regola PH_OFFSET dopo aver misurato una soluzione buffer nota (pH 7.0).
-// Es: se legge 7.3 con buffer pH 7.0 → PH_OFFSET = -0.3
 #define PH_PIN     1
-#define PH_OFFSET  0.0f   // da calibrare con soluzione buffer pH 7.0
-
-// Algoritmo DFRobot ufficiale: 40 campioni, scarta il 25% outlier alto e basso,
-// fa media del resto — robusto contro spike e rumore ADC.
+#define PH_OFFSET  0.0f
 #define PH_ARRAY_LEN 40
 int phArray[PH_ARRAY_LEN];
 int phArrayIndex = 0;
 
 float phAverageArray(int* arr, int len) {
-  // Insertion sort
   for (int i = 1; i < len; i++) {
     int key = arr[i], j = i - 1;
     while (j >= 0 && arr[j] > key) { arr[j + 1] = arr[j]; j--; }
     arr[j + 1] = key;
   }
-  // Scarta il 25% più basso e più alto
   long sum = 0;
   int from = len / 4, to = len - len / 4;
   for (int i = from; i < to; i++) sum += arr[i];
@@ -147,67 +142,40 @@ float phAverageArray(int* arr, int len) {
 float readPH() {
   phArray[phArrayIndex++] = analogRead(PH_PIN);
   if (phArrayIndex >= PH_ARRAY_LEN) phArrayIndex = 0;
-
-  // Copia il buffer per non alterare l'originale durante il sort
   int tmp[PH_ARRAY_LEN];
   memcpy(tmp, phArray, sizeof(phArray));
-
   float raw     = phAverageArray(tmp, PH_ARRAY_LEN);
   float voltage = raw * 3.3f / 4095.0f;
-  // Riscala a 5V (scala originale del SEN0169)
   float voltageScaled = voltage * (5.0f / 3.3f);
   return 7.0f + ((2.5f - voltageScaled) / 0.18f) + PH_OFFSET;
 }
 
-// === EC (DFR0300, uscita analogica su IO2) ===
-// NOTA: DFR0300 è progettato per 5V — stessa correzione di scala del pH.
-// La conversione tensione→EC dipende dalla temperatura (compensazione a 25°C).
-// EC_OFFSET: da calibrare con soluzione standard (es. 1413 µS/cm).
-// Formula: EC (µS/cm) = (voltageScaled / 0.4) * 1000  (lineare, valida ~0–20 mS/cm)
-// ⚠️ Il sensore NON è ancora collegato — restituisce NAN finché IO2 non è connesso.
 #define EC_PIN    2
-#define EC_OFFSET 0.0f  // da calibrare
-
+#define EC_OFFSET 0.0f
 #define EC_ARRAY_LEN 40
 int ecArray[EC_ARRAY_LEN];
 int ecArrayIndex = 0;
-bool ecConnected = true;  // sonda collegata su IO2
+bool ecConnected = true;
 
 float readEC(float temperatureC) {
   if (!ecConnected) return NAN;
-
   ecArray[ecArrayIndex++] = analogRead(EC_PIN);
   if (ecArrayIndex >= EC_ARRAY_LEN) ecArrayIndex = 0;
-
   int tmp[EC_ARRAY_LEN];
   memcpy(tmp, ecArray, sizeof(ecArray));
-
   float raw     = phAverageArray(tmp, EC_ARRAY_LEN);
   float voltage = raw * 3.3f / 4095.0f;
-
-  // DFR0300 alimentato a 3.3V: uscita già in range 0–3.3V, nessuna riscalatura.
-  // Formula DFRobot per alimentazione 3.3V (K=1):
-  // EC (mS/cm) = (133.42 * V^3 - 255.86 * V^2 + 857.39 * V) * 0.5  (empirica)
   float ecRaw = (133.42f * voltage * voltage * voltage
                - 255.86f * voltage * voltage
-               + 857.39f * voltage) * 0.5f;  // mS/cm a 25°C
-
-  // Compensazione temperatura (2%/°C rispetto a 25°C)
+               + 857.39f * voltage) * 0.5f;
   float tempCoeff = 1.0f + 0.02f * (temperatureC - 25.0f);
-  float ec = ecRaw / tempCoeff;  // mS/cm compensata
-
-  // Converti in µS/cm (* 1000) e applica offset calibrazione
+  float ec = ecRaw / tempCoeff;
   return (ec * 1000.0f) + EC_OFFSET;
 }
 
-// === Torbidità / OD proxy (SEN0189, analogico su IO3) ===
-// Il SEN0189 misura torbidità in NTU (uscita analogica inversa: più torbido = tensione più bassa).
-// Usato come proxy per OD — non è OD₇₅₀ vero ma correlato alla densità cellulare.
-// TURB_OFFSET: da calibrare con campioni a densità nota.
-// ⚠️ Non ancora collegato — restituisce NAN finché IO3 non è connesso.
 #define TURB_PIN      3
 #define TURB_OFFSET   0.0f
-bool turbConnected = false;  // impostare true quando collegato
+bool turbConnected = false;
 
 float readTurbidity() {
   if (!turbConnected) return NAN;
@@ -216,23 +184,30 @@ float readTurbidity() {
   float raw     = phAverageArray(tmp, 40);
   float voltage = raw * 3.3f / 4095.0f;
   float voltageScaled = voltage * (5.0f / 3.3f);
-  // SEN0189: NTU = -1120.4*V^2 + 5742.3*V - 4353.8 (formula DFRobot, valida 2.5–4.2V)
   float ntu = -1120.4f * voltageScaled * voltageScaled + 5742.3f * voltageScaled - 4353.8f;
   if (ntu < 0.0f) ntu = 0.0f;
   return ntu + TURB_OFFSET;
 }
 
-// === WEB SERVER ===
 WebServer server(80);
 
-// === STATO GLOBALE ===
 struct SensorState {
   float temperature = NAN;
   float lux         = NAN;
-  bool  temp_fault  = false;   // fault MAX31865
-  float ph       = NAN;   // reale — SEN0169-V2 su IO1
-  float ec_uScm  = NAN;   // reale — DFR0300 su IO2 (da collegare), µS/cm
-  float od       = NAN;   // reale — SEN0189 torbidità su IO3 (da collegare), proxy OD
+  bool  temp_fault  = false;
+  float ph          = NAN;
+  float ec_uScm     = NAN;
+  float od          = NAN;
+  int   led_pwm     = 0;
+  bool  led_auto    = LED_MODE_AUTO;
+  int   day_start_min = DAY_START_MIN;
+  int   day_end_min   = DAY_END_MIN;
+  int   ramp_minutes  = RAMP_MINUTES;
+  int   led_day_pwm   = LED_DAY_PWM;
+  int   led_night_pwm = LED_NIGHT_PWM;
+  String led_phase = "manual";
+  String led_next_change = "—";
+  String current_time_str = "—";
   unsigned long ts  = 0;
   bool  wifi_ok     = false;
   bool  mqtt_ok     = false;
@@ -240,7 +215,6 @@ struct SensorState {
   int   rssi        = -127;
 } state;
 
-// === HTML dashboard ===
 static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
 <html lang="it">
 <head>
@@ -253,178 +227,187 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   h1{font-size:1.3rem;font-weight:600;color:#fff;margin-bottom:4px}
   .subtitle{font-size:.8rem;color:#666;margin-bottom:24px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px}
-  .card{background:#1a1d27;border-radius:12px;padding:18px 16px;position:relative;overflow:hidden}
-  .card::before{content:'';position:absolute;inset:0;border-radius:12px;padding:1px;
-    background:linear-gradient(135deg,#2a2d3e,#1a1d27);-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);mask-composite:exclude}
+  .card,.panel{background:#1a1d27;border-radius:12px;padding:16px;position:relative;overflow:hidden}
   .label{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#555;margin-bottom:8px}
   .value{font-size:2rem;font-weight:700;line-height:1;color:#fff}
   .value.fault{color:#ef5350!important;font-size:1rem;margin-top:6px}
   .unit{font-size:.8rem;color:#555;margin-top:4px}
-  .temp    .value{color:#ff7043}
-  .lux     .value{color:#fdd835}
-  .ph      .value{color:#42a5f5}
-  .od      .value{color:#ab47bc}
-  .ec      .value{color:#26c6da}
-  .status-bar{margin-top:20px;display:flex;gap:12px;flex-wrap:wrap;font-size:.75rem;align-items:center}
-  .badge{padding:4px 10px;border-radius:20px;background:#1a1d27}
-  .badge.ok{color:#66bb6a}
-  .badge.err{color:#ef5350}
-  .rssi{font-size:.7rem;color:#555;margin-left:4px}
-  .updated{margin-top:14px;font-size:.7rem;color:#444;text-align:right}
+  .panel{margin-top:20px}
+  .toggle-line{display:flex;align-items:center;gap:10px;color:#ddd;margin-bottom:14px;font-size:.95rem}
+  .hint{margin-top:10px;font-size:.8rem;color:#999}
+  .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px}
+  .field label{display:block;font-size:.8rem;color:#aaa;margin-bottom:6px}
+  .field input{width:100%;padding:8px 10px;border-radius:8px;border:1px solid #333;background:#11141c;color:#fff}
+  input[type=range]{width:100%}
+  input[type=checkbox]{transform:scale(1.2)}
+  button{margin-top:14px;padding:10px 14px;border:none;border-radius:8px;background:#42a5f5;color:white;cursor:pointer}
 </style>
 </head>
 <body>
 <h1>Bioreattore</h1>
-<div class="subtitle" id="ts">—</div>
+<div class="subtitle">Sensori + controllo luce damigiana</div>
 
 <div class="grid">
-  <div class="card temp">
-    <div class="label">Temperatura</div>
-    <div class="value" id="temperature">—</div>
-    <div class="unit">°C</div>
-  </div>
-  <div class="card lux">
-    <div class="label">Luminosità</div>
-    <div class="value" id="lux">—</div>
-    <div class="unit">lux</div>
-  </div>
-  <div class="card ph">
-    <div class="label">pH</div>
-    <div class="value" id="ph">—</div>
-    <div class="unit">&nbsp;</div>
-  </div>
-  <div class="card ec">
-    <div class="label">Conducibilità (EC)</div>
-    <div class="value" id="ec">—</div>
-    <div class="unit">µS/cm</div>
-  </div>
-  <div class="card od">
-    <div class="label">Torbidità (OD proxy)</div>
-    <div class="value" id="od">—</div>
-    <div class="unit">NTU</div>
-  </div>
+  <div class="card"><div class="label">Ora attuale</div><div class="value" id="clock_now">—</div><div class="unit">Europe/Rome</div></div>
+  <div class="card"><div class="label">Fase luce</div><div class="value" id="led_phase">—</div><div class="unit">modalità ciclo</div></div>
+  <div class="card"><div class="label">Prossimo cambio</div><div class="value" id="led_next_change">—</div><div class="unit">evento successivo</div></div>
+  <div class="card"><div class="label">Temperatura</div><div class="value" id="temperature">—</div><div class="unit">°C</div></div>
+  <div class="card"><div class="label">Luminosità</div><div class="value" id="lux">—</div><div class="unit">lux</div></div>
+  <div class="card"><div class="label">pH</div><div class="value" id="ph">—</div><div class="unit">&nbsp;</div></div>
+  <div class="card"><div class="label">Conducibilità (EC)</div><div class="value" id="ec">—</div><div class="unit">µS/cm</div></div>
+  <div class="card"><div class="label">Torbidità (OD proxy)</div><div class="value" id="od">—</div><div class="unit">NTU</div></div>
+  <div class="card"><div class="label">LED PWM</div><div class="value" id="led_pwm">—</div><div class="unit">0–255</div></div>
 </div>
 
-<div class="status-bar">
-  <span class="badge" id="b-wifi">WiFi —</span>
-  <span class="badge" id="b-mqtt">MQTT —</span>
-  <span class="badge" id="b-ntp">NTP —</span>
-  <span class="rssi" id="rssi"></span>
+<div class="panel">
+  <div class="label" style="margin-bottom:12px">Controllo luce damigiana</div>
+  <label class="toggle-line" for="ledAuto">
+    <input type="checkbox" id="ledAuto">
+    <span>Modalità automatica giorno/notte</span>
+  </label>
+  <div style="margin-bottom:8px;font-size:.95rem;color:#ddd">Duty manuale: <span id="ledSliderValue">0</span></div>
+  <input type="range" min="0" max="255" value="0" id="ledSlider">
+  <div class="form-grid">
+    <div class="field"><label for="dayStart">Inizio giorno</label><input type="time" id="dayStart"></div>
+    <div class="field"><label for="dayEnd">Fine giorno</label><input type="time" id="dayEnd"></div>
+    <div class="field"><label for="rampMinutes">Rampa (min)</label><input type="number" id="rampMinutes" min="0" max="180"></div>
+    <div class="field"><label for="dayPwm">Duty giorno</label><input type="number" id="dayPwm" min="0" max="255"></div>
+    <div class="field"><label for="nightPwm">Duty notte</label><input type="number" id="nightPwm" min="0" max="255"></div>
+  </div>
+  <button onclick="saveLedConfig()">Salva configurazione luce</button>
+  <div class="hint">Configurazione persistente al riavvio. Lo stato ciclo viene mostrato sopra.</div>
 </div>
-<div class="updated" id="updated">—</div>
 
 <script>
-function fmt(v, dec) {
-  if (v === null || v === undefined || isNaN(v)) return '—';
-  return parseFloat(v).toFixed(dec);
-}
-function badge(el, ok, label) {
-  el.textContent = label + (ok ? ' ✓' : ' ✗');
-  el.className = 'badge ' + (ok ? 'ok' : 'err');
-}
-
+function fmt(v, dec) { if (v === null || v === undefined || isNaN(v)) return '—'; return parseFloat(v).toFixed(dec); }
+function minToHHMM(m) { const h = String(Math.floor(m/60)).padStart(2,'0'); const mm = String(m%60).padStart(2,'0'); return `${h}:${mm}`; }
 async function refresh() {
-  try {
-    const r = await fetch('/data');
-    if (!r.ok) throw new Error(r.status);
-    const d = await r.json();
+  const r = await fetch('/data'); const d = await r.json();
+  document.getElementById('clock_now').textContent = d.current_time || '—';
+  document.getElementById('led_phase').textContent = d.led_phase || '—';
+  document.getElementById('led_next_change').textContent = d.led_next_change || '—';
+  const tempEl = document.getElementById('temperature');
+  if (d.temp_fault) { tempEl.textContent = 'FAULT'; tempEl.className = 'value fault'; }
+  else { tempEl.textContent = fmt(d.temperature, 2); tempEl.className = 'value'; }
+  document.getElementById('lux').textContent = d.lux !== null ? fmt(d.lux, 0) : '—';
+  document.getElementById('ph').textContent = fmt(d.ph, 2);
+  document.getElementById('ec').textContent = d.ec !== null ? fmt(d.ec, 0) : '—';
+  document.getElementById('od').textContent = d.od !== null ? fmt(d.od, 0) : '—';
+  document.getElementById('led_pwm').textContent = d.led_pwm ?? '—';
 
-    const tempEl = document.getElementById('temperature');
-    if (d.temp_fault) {
-      tempEl.textContent = 'FAULT';
-      tempEl.className = 'value fault';
-    } else {
-      tempEl.textContent = fmt(d.temperature, 2);
-      tempEl.className = 'value';
-    }
+  const slider = document.getElementById('ledSlider');
+  const sliderValue = document.getElementById('ledSliderValue');
+  const autoChk = document.getElementById('ledAuto');
+  autoChk.checked = !!d.led_auto;
+  slider.disabled = !!d.led_auto;
+  if (document.activeElement !== slider) slider.value = d.led_pwm ?? 0;
+  sliderValue.textContent = slider.value;
 
-    document.getElementById('lux').textContent = d.lux !== null ? fmt(d.lux, 0) : '—';
-    document.getElementById('ph').textContent  = fmt(d.ph, 2);
-    document.getElementById('ec').textContent  = d.ec !== null ? fmt(d.ec, 0) : '—';
-    document.getElementById('od').textContent  = d.od !== null ? fmt(d.od, 0) : '—';
-
-    badge(document.getElementById('b-wifi'), d.wifi, 'WiFi');
-    badge(document.getElementById('b-mqtt'), d.mqtt, 'MQTT');
-    badge(document.getElementById('b-ntp'),  d.ntp,  'NTP');
-
-    if (d.rssi && d.wifi) {
-      document.getElementById('rssi').textContent = d.rssi + ' dBm';
-    }
-
-    if (d.ts) {
-      const dt = new Date(d.ts * 1000);
-      document.getElementById('ts').textContent = dt.toLocaleString('it-IT');
-    }
-    document.getElementById('updated').textContent =
-      'aggiornato ' + new Date().toLocaleTimeString('it-IT');
-  } catch(e) {
-    document.getElementById('updated').textContent = 'errore fetch: ' + e;
-  }
+  if (document.activeElement.id !== 'dayStart') document.getElementById('dayStart').value = minToHHMM(d.day_start_min || 480);
+  if (document.activeElement.id !== 'dayEnd') document.getElementById('dayEnd').value = minToHHMM(d.day_end_min || 1200);
+  if (document.activeElement.id !== 'rampMinutes') document.getElementById('rampMinutes').value = d.ramp_minutes ?? 30;
+  if (document.activeElement.id !== 'dayPwm') document.getElementById('dayPwm').value = d.led_day_pwm ?? 180;
+  if (document.activeElement.id !== 'nightPwm') document.getElementById('nightPwm').value = d.led_night_pwm ?? 0;
 }
-
-refresh();
-setInterval(refresh, 2000);
+const slider = document.getElementById('ledSlider');
+const sliderValue = document.getElementById('ledSliderValue');
+const autoChk = document.getElementById('ledAuto');
+let ledDebounce = null;
+slider.addEventListener('input', () => { sliderValue.textContent = slider.value; clearTimeout(ledDebounce); ledDebounce = setTimeout(() => setLedPwm(slider.value), 120); });
+autoChk.addEventListener('change', async () => { await fetch('/ledmode?auto=' + (autoChk.checked ? '1' : '0')); setTimeout(refresh, 150); });
+async function setLedPwm(v) { await fetch('/led?duty=' + encodeURIComponent(v)); setTimeout(refresh, 120); }
+async function saveLedConfig() {
+  const params = new URLSearchParams({
+    dayStart: document.getElementById('dayStart').value,
+    dayEnd: document.getElementById('dayEnd').value,
+    ramp: document.getElementById('rampMinutes').value,
+    dayPwm: document.getElementById('dayPwm').value,
+    nightPwm: document.getElementById('nightPwm').value,
+  });
+  await fetch('/ledconfig?' + params.toString());
+  setTimeout(refresh, 150);
+}
+refresh(); setInterval(refresh, 2000);
 </script>
 </body>
 </html>)rawhtml";
 
-// === HANDLER HTTP ===
-void handleRoot() {
-  server.send_P(200, "text/html", HTML_PAGE);
+void applyLedControl();
+int computeAutoLedPwm();
+void loadLedConfig();
+void saveLedConfig();
+int parseHHMMToMin(const String &hhmm);
+String minToHHMMString(int m);
+void updateLedCycleStatus();
+
+void handleRoot() { server.send_P(200, "text/html", HTML_PAGE); }
+
+void handleSetLed() {
+  if (!server.hasArg("duty")) {
+    server.send(400, "text/plain", "missing duty");
+    return;
+  }
+  int duty = server.arg("duty").toInt();
+  if (duty < 0) duty = 0;
+  if (duty > 255) duty = 255;
+  state.led_auto = false;
+  state.led_pwm = duty;
+  applyLedControl();
+  Serial.printf("LED PWM manuale -> duty=%d/255\n", state.led_pwm);
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", String("{\"ok\":true,\"led_pwm\":") + state.led_pwm + "}");
+}
+
+void handleLedConfig() {
+  if (server.hasArg("dayStart")) state.day_start_min = parseHHMMToMin(server.arg("dayStart"));
+  if (server.hasArg("dayEnd")) state.day_end_min = parseHHMMToMin(server.arg("dayEnd"));
+  if (server.hasArg("ramp")) state.ramp_minutes = constrain(server.arg("ramp").toInt(), 0, 180);
+  if (server.hasArg("dayPwm")) state.led_day_pwm = constrain(server.arg("dayPwm").toInt(), 0, 255);
+  if (server.hasArg("nightPwm")) state.led_night_pwm = constrain(server.arg("nightPwm").toInt(), 0, 255);
+  saveLedConfig();
+  applyLedControl();
+  Serial.printf("LED config salvata -> start=%s end=%s ramp=%d day=%d night=%d\n", minToHHMMString(state.day_start_min).c_str(), minToHHMMString(state.day_end_min).c_str(), state.ramp_minutes, state.led_day_pwm, state.led_night_pwm);
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleLedMode() {
+  bool autoMode = false;
+  if (server.hasArg("auto")) autoMode = server.arg("auto").toInt() != 0;
+  state.led_auto = autoMode;
+  applyLedControl();
+  Serial.printf("LED mode -> %s\n", state.led_auto ? "AUTO" : "MANUAL");
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", String("{\"ok\":true,\"led_auto\":") + (state.led_auto ? "true" : "false") + "}");
 }
 
 void handleData() {
-  char buf[384];
-  // Usa "null" per valori NaN — JSON valido e gestibile dal browser
-  char t_str[12], l_str[12], ph_str[12];
-  if (isnan(state.temperature) || state.temp_fault)
-    snprintf(t_str, sizeof(t_str), "null");
-  else
-    snprintf(t_str, sizeof(t_str), "%.2f", state.temperature);
-
-  if (isnan(state.lux) || state.lux < 0)
-    snprintf(l_str, sizeof(l_str), "null");
-  else
-    snprintf(l_str, sizeof(l_str), "%.1f", state.lux);
-
-  if (isnan(state.ph))
-    snprintf(ph_str, sizeof(ph_str), "null");
-  else
-    snprintf(ph_str, sizeof(ph_str), "%.2f", state.ph);
-
-  char ec_str[12], od_str[12];
+  char buf[420];
+  char t_str[12], l_str[12], ph_str[12], ec_str[12], od_str[12];
+  if (isnan(state.temperature) || state.temp_fault) snprintf(t_str, sizeof(t_str), "null");
+  else snprintf(t_str, sizeof(t_str), "%.2f", state.temperature);
+  if (isnan(state.lux) || state.lux < 0) snprintf(l_str, sizeof(l_str), "null");
+  else snprintf(l_str, sizeof(l_str), "%.1f", state.lux);
+  if (isnan(state.ph)) snprintf(ph_str, sizeof(ph_str), "null");
+  else snprintf(ph_str, sizeof(ph_str), "%.2f", state.ph);
   if (isnan(state.ec_uScm)) snprintf(ec_str, sizeof(ec_str), "null");
   else snprintf(ec_str, sizeof(ec_str), "%.1f", state.ec_uScm);
-
   if (isnan(state.od)) snprintf(od_str, sizeof(od_str), "null");
   else snprintf(od_str, sizeof(od_str), "%.1f", state.od);
 
   snprintf(buf, sizeof(buf),
-    "{\"temperature\":%s,\"lux\":%s,\"temp_fault\":%s"
-    ",\"ph\":%s,\"ec\":%s,\"od\":%s"
-    ",\"ts\":%lu,\"wifi\":%s,\"mqtt\":%s,\"ntp\":%s,\"rssi\":%d}",
-    t_str, l_str, state.temp_fault ? "true" : "false",
-    ph_str, ec_str, od_str,
-    state.ts,
-    state.wifi_ok ? "true" : "false",
-    state.mqtt_ok ? "true" : "false",
-    state.ntp_ok  ? "true" : "false",
-    state.rssi
-  );
+    "{\"temperature\":%s,\"lux\":%s,\"temp_fault\":%s,\"ph\":%s,\"ec\":%s,\"od\":%s,\"led_pwm\":%d,\"led_auto\":%s,\"led_phase\":\"%s\",\"led_next_change\":\"%s\",\"current_time\":\"%s\",\"day_start_min\":%d,\"day_end_min\":%d,\"ramp_minutes\":%d,\"led_day_pwm\":%d,\"led_night_pwm\":%d,\"ts\":%lu,\"wifi\":%s,\"mqtt\":%s,\"ntp\":%s,\"rssi\":%d}",
+    t_str, l_str, state.temp_fault ? "true" : "false", ph_str, ec_str, od_str, state.led_pwm, state.led_auto ? "true" : "false", state.led_phase.c_str(), state.led_next_change.c_str(), state.current_time_str.c_str(), state.day_start_min, state.day_end_min, state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.ts,
+    state.wifi_ok ? "true" : "false", state.mqtt_ok ? "true" : "false", state.ntp_ok ? "true" : "false", state.rssi);
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", buf);
 }
 
-// === BUFFER MQTT ===
 #define BUFFER_SIZE 50
-struct SensorMessage {
-  unsigned long ts;
-  float lux, temperature, ph, ec_uScm, od;
-};
+struct SensorMessage { unsigned long ts; float lux, temperature, ph, ec_uScm, od; };
 SensorMessage mqttBuffer[BUFFER_SIZE];
 int bufferStart = 0, bufferCount = 0;
 
-// === MQTT reconnect ===
 void reconnectMQTT() {
   static unsigned long lastAttemptMs = 0;
   if (mqttClient.connected()) return;
@@ -433,50 +416,156 @@ void reconnectMQTT() {
   lastAttemptMs = millis();
   String id = "ESP32Client-" + String((uint32_t)esp_random(), HEX);
   const char* u = MQTT_USER; const char* p = MQTT_PASSWORD;
-  bool ok = (u && u[0]) ? mqttClient.connect(id.c_str(), u, p)
-                        : mqttClient.connect(id.c_str());
-  if (ok) {
-    Serial.println("✅ MQTT connesso");
-  } else {
-    Serial.print("❌ MQTT fallito, rc=");
-    Serial.println(mqttClient.state());
-  }
+  bool ok = (u && u[0]) ? mqttClient.connect(id.c_str(), u, p) : mqttClient.connect(id.c_str());
+  if (ok) Serial.println("✅ MQTT connesso");
+  else { Serial.print("❌ MQTT fallito, rc="); Serial.println(mqttClient.state()); }
 }
 
-// Simulatore rimosso — tutti i KPI sono ora reali o non misurati.
-
-// === BUFFER MQTT helpers ===
 void addToBuffer(unsigned long ts, float lux, float temp) {
   SensorMessage m = {ts, lux, temp, state.ph, state.ec_uScm, state.od};
-  if (bufferCount < BUFFER_SIZE) {
-    mqttBuffer[(bufferStart + bufferCount++) % BUFFER_SIZE] = m;
-  } else {
-    mqttBuffer[bufferStart] = m;
-    bufferStart = (bufferStart + 1) % BUFFER_SIZE;
-  }
+  if (bufferCount < BUFFER_SIZE) mqttBuffer[(bufferStart + bufferCount++) % BUFFER_SIZE] = m;
+  else { mqttBuffer[bufferStart] = m; bufferStart = (bufferStart + 1) % BUFFER_SIZE; }
 }
+
 void flushBufferMQTT() {
   while (bufferCount > 0 && mqttClient.connected()) {
     SensorMessage &m = mqttBuffer[bufferStart];
-    char payload[320];
-    char ec_str[12], od_str[12];
-    if (isnan(m.ec_uScm)) snprintf(ec_str, sizeof(ec_str), "null");
-    else snprintf(ec_str, sizeof(ec_str), "%.1f", m.ec_uScm);
-    if (isnan(m.od)) snprintf(od_str, sizeof(od_str), "null");
-    else snprintf(od_str, sizeof(od_str), "%.1f", m.od);
+    char payload[320], ec_str[12], od_str[12];
+    if (isnan(m.ec_uScm)) snprintf(ec_str, sizeof(ec_str), "null"); else snprintf(ec_str, sizeof(ec_str), "%.1f", m.ec_uScm);
+    if (isnan(m.od)) snprintf(od_str, sizeof(od_str), "null"); else snprintf(od_str, sizeof(od_str), "%.1f", m.od);
     snprintf(payload, sizeof(payload),
-      "{\"ts\":%lu,\"temperature\":%.2f,\"lux\":%.1f,\"ph\":%.2f"
-      ",\"ec\":%s,\"od\":%s}",
-      m.ts, m.temperature, m.lux, m.ph, ec_str, od_str);
+      "{\"ts\":%lu,\"temperature\":%.2f,\"lux\":%.1f,\"ph\":%.2f,\"ec\":%s,\"od\":%s,\"led_pwm\":%d}",
+      m.ts, m.temperature, m.lux, m.ph, ec_str, od_str, state.led_pwm);
     Serial.print("📤 MQTT → "); Serial.println(payload);
-    if (mqttClient.publish(mqtt_topic, payload)) {
-      bufferStart = (bufferStart + 1) % BUFFER_SIZE;
-      bufferCount--;
-    } else { Serial.println("⚠️ Publish fallito"); break; }
+    if (mqttClient.publish(mqtt_topic, payload)) { bufferStart = (bufferStart + 1) % BUFFER_SIZE; bufferCount--; }
+    else { Serial.println("⚠️ Publish fallito"); break; }
   }
 }
 
-// ================================================================
+int parseHHMMToMin(const String &hhmm) {
+  int c = hhmm.indexOf(':');
+  if (c < 0) return 0;
+  int h = hhmm.substring(0, c).toInt();
+  int m = hhmm.substring(c + 1).toInt();
+  return constrain(h, 0, 23) * 60 + constrain(m, 0, 59);
+}
+
+String minToHHMMString(int m) {
+  m = constrain(m, 0, 23 * 60 + 59);
+  int h = m / 60;
+  int mm = m % 60;
+  char buf[6];
+  snprintf(buf, sizeof(buf), "%02d:%02d", h, mm);
+  return String(buf);
+}
+
+void updateLedCycleStatus() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 100)) {
+    state.current_time_str = "—";
+    state.led_next_change = "—";
+    state.led_phase = state.led_auto ? "auto" : "manual";
+    return;
+  }
+
+  int nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  state.current_time_str = minToHHMMString(nowMin);
+
+  if (!state.led_auto) {
+    state.led_phase = "manual";
+    state.led_next_change = "—";
+    return;
+  }
+
+  int dayStart = state.day_start_min;
+  int dayEnd = state.day_end_min;
+  int ramp = state.ramp_minutes;
+
+  if (ramp <= 0) {
+    if (nowMin >= dayStart && nowMin < dayEnd) {
+      state.led_phase = "day";
+      state.led_next_change = minToHHMMString(dayEnd);
+    } else {
+      state.led_phase = "night";
+      state.led_next_change = minToHHMMString(dayStart);
+    }
+    return;
+  }
+
+  if (nowMin < dayStart - ramp) {
+    state.led_phase = "night";
+    state.led_next_change = minToHHMMString(dayStart - ramp);
+  } else if (nowMin < dayStart) {
+    state.led_phase = "sunrise";
+    state.led_next_change = minToHHMMString(dayStart);
+  } else if (nowMin < dayEnd) {
+    state.led_phase = "day";
+    state.led_next_change = minToHHMMString(dayEnd);
+  } else if (nowMin < dayEnd + ramp) {
+    state.led_phase = "sunset";
+    state.led_next_change = minToHHMMString(dayEnd + ramp);
+  } else {
+    state.led_phase = "night";
+    state.led_next_change = minToHHMMString(dayStart - ramp);
+  }
+}
+
+void loadLedConfig() {
+  preferences.begin("bioreactor", true);
+  state.led_auto = preferences.getBool("led_auto", LED_MODE_AUTO);
+  state.day_start_min = preferences.getInt("day_start", DAY_START_MIN);
+  state.day_end_min = preferences.getInt("day_end", DAY_END_MIN);
+  state.ramp_minutes = preferences.getInt("ramp_min", RAMP_MINUTES);
+  state.led_day_pwm = preferences.getInt("day_pwm", LED_DAY_PWM);
+  state.led_night_pwm = preferences.getInt("night_pwm", LED_NIGHT_PWM);
+  preferences.end();
+}
+
+void saveLedConfig() {
+  preferences.begin("bioreactor", false);
+  preferences.putBool("led_auto", state.led_auto);
+  preferences.putInt("day_start", state.day_start_min);
+  preferences.putInt("day_end", state.day_end_min);
+  preferences.putInt("ramp_min", state.ramp_minutes);
+  preferences.putInt("day_pwm", state.led_day_pwm);
+  preferences.putInt("night_pwm", state.led_night_pwm);
+  preferences.end();
+}
+
+int computeAutoLedPwm() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 100)) return state.led_pwm;
+  int nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  int dayStart = state.day_start_min;
+  int dayEnd = state.day_end_min;
+  int ramp = state.ramp_minutes;
+
+  if (ramp <= 0) {
+    if (nowMin >= dayStart && nowMin < dayEnd) return state.led_day_pwm;
+    return state.led_night_pwm;
+  }
+
+  if (nowMin < dayStart - ramp || nowMin >= dayEnd + ramp) return state.led_night_pwm;
+  if (nowMin >= dayStart && nowMin < dayEnd) return state.led_day_pwm;
+  if (nowMin >= dayStart - ramp && nowMin < dayStart) {
+    float x = float(nowMin - (dayStart - ramp)) / float(ramp);
+    return int(state.led_night_pwm + x * (state.led_day_pwm - state.led_night_pwm));
+  }
+  if (nowMin >= dayEnd && nowMin < dayEnd + ramp) {
+    float x = float(nowMin - dayEnd) / float(ramp);
+    return int(state.led_day_pwm + x * (state.led_night_pwm - state.led_day_pwm));
+  }
+  return state.led_night_pwm;
+}
+
+void applyLedControl() {
+  int duty = state.led_auto ? computeAutoLedPwm() : state.led_pwm;
+  if (duty < 0) duty = 0;
+  if (duty > 255) duty = 255;
+  state.led_pwm = duty;
+  ledcWrite(LED_PWM_PIN, state.led_pwm);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(100);
@@ -484,16 +573,13 @@ void setup() {
   Wire.begin(8, 9);
   Wire.setClock(100000);
 
-  // WiFi con auto-reconnect esplicito
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
   WiFi.begin(ssid, password);
   Serial.print("Connessione WiFi");
   unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
-    delay(300); Serial.print(".");
-  }
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) { delay(300); Serial.print("."); }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n✅ WiFi OK — IP: " + WiFi.localIP().toString());
     Serial.println("🌐 Dashboard: http://" + WiFi.localIP().toString() + "/");
@@ -501,25 +587,29 @@ void setup() {
     Serial.println("\n⚠️ WiFi timeout, continuo offline (auto-reconnect attivo)");
   }
 
-  // NTP con timezone POSIX (gestisce DST automaticamente)
   configTzTime(TZ_EUROPE_ROME, ntpServer);
 
-  // BH1750
   lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)
     ? Serial.println("✅ BH1750 OK")
     : Serial.println("⚠️ BH1750 non trovato");
 
-  // MAX31865
   max31865.begin(MAX31865_3WIRE);
 
-  // MQTT TLS
   espClient.setCACert(LE_ROOT_CA);
   mqttClient.setServer(mqtt_server, mqtt_port);
   mqttClient.setBufferSize(256);
 
-  // Web server
-  server.on("/",     HTTP_GET, handleRoot);
+  loadLedConfig();
+  ledcAttach(LED_PWM_PIN, LED_PWM_FREQ, LED_PWM_RES_BITS);
+  state.led_pwm = LED_PWM_DEFAULT;
+  applyLedControl();
+  Serial.printf("✅ LED PWM pronto su GPIO %d (%d Hz, %d bit)\n", LED_PWM_PIN, LED_PWM_FREQ, LED_PWM_RES_BITS);
+
+  server.on("/", HTTP_GET, handleRoot);
   server.on("/data", HTTP_GET, handleData);
+  server.on("/led", HTTP_GET, handleSetLed);
+  server.on("/ledmode", HTTP_GET, handleLedMode);
+  server.on("/ledconfig", HTTP_GET, handleLedConfig);
   server.begin();
   Serial.println("✅ Web server avviato");
 }
@@ -527,9 +617,12 @@ void setup() {
 void loop() {
   static unsigned long lastSensorMs  = 0;
   static unsigned long lastPublishMs = 0;
-  static bool firstPublishDone       = false;
-  const unsigned long SENSOR_INTERVAL_MS  = 2000;
+  static unsigned long lastLedStepMs = 0;
+  static bool firstPublishDone = false;
+  static int ledStepIndex = 0;
+  const unsigned long SENSOR_INTERVAL_MS = 2000;
   const unsigned long PUBLISH_INTERVAL_MS = 300000;
+  const unsigned long LED_STEP_INTERVAL_MS = 3000;
 
   server.handleClient();
   reconnectMQTT();
@@ -537,7 +630,26 @@ void loop() {
 
   unsigned long nowMs = millis();
 
-  // --- lettura sensori ogni 2s ---
+  if (LED_PWM_TEST_MODE && nowMs - lastLedStepMs >= LED_STEP_INTERVAL_MS) {
+    lastLedStepMs = nowMs;
+    const int steps[] = {0, 64, 128, 192, 255};
+    const int numSteps = sizeof(steps) / sizeof(steps[0]);
+    state.led_pwm = steps[ledStepIndex];
+    ledcWrite(LED_PWM_PIN, state.led_pwm);
+    Serial.printf("LED PWM test → duty=%d/255\n", state.led_pwm);
+    ledStepIndex = (ledStepIndex + 1) % numSteps;
+  }
+
+  if (state.led_auto) {
+    static unsigned long lastAutoUpdateMs = 0;
+    if (nowMs - lastAutoUpdateMs >= 10000) {
+      lastAutoUpdateMs = nowMs;
+      applyLedControl();
+    }
+  }
+
+  updateLedCycleStatus();
+
   if (nowMs - lastSensorMs >= SENSOR_INTERVAL_MS) {
     lastSensorMs = nowMs;
 
@@ -551,22 +663,14 @@ void loop() {
     state.ec_uScm = readEC(isnan(state.temperature) ? 25.0f : state.temperature);
     state.od      = readTurbidity();
 
-    // MAX31865: controlla fault prima di leggere la temperatura
     uint8_t fault = max31865.readFault();
     if (fault) {
       state.temp_fault = true;
       state.temperature = NAN;
-      Serial.printf("⚠️ MAX31865 fault: 0x%02X", fault);
-      if (fault & MAX31865_FAULT_HIGHTHRESH)  Serial.print(" [HIGH_THRESH]");
-      if (fault & MAX31865_FAULT_LOWTHRESH)   Serial.print(" [LOW_THRESH]");
-      if (fault & MAX31865_FAULT_REFINLOW)    Serial.print(" [REFINLOW]");
-      if (fault & MAX31865_FAULT_REFINHIGH)   Serial.print(" [REFINHIGH]");
-      if (fault & MAX31865_FAULT_RTDINLOW)    Serial.print(" [RTDINLOW]");
-      if (fault & MAX31865_FAULT_OVUV)        Serial.print(" [OV/UV]");
-      Serial.println();
+      Serial.printf("⚠️ MAX31865 fault: 0x%02X\n", fault);
       max31865.clearFault();
     } else {
-      state.temp_fault  = false;
+      state.temp_fault = false;
       state.temperature = max31865.temperature(RNOMINAL, RREF);
     }
 
@@ -574,18 +678,22 @@ void loop() {
     state.mqtt_ok = mqttClient.connected();
     state.rssi    = state.wifi_ok ? WiFi.RSSI() : -127;
 
-    Serial.printf("T=%.2f%s Lux=%.1f pH=%.2f EC=%.0f OD(NTU)=%.0f | WiFi=%s(%ddBm) MQTT=%s NTP=%s\n",
+    Serial.printf("%s | phase=%s next=%s | T=%.2f%s Lux=%.1f pH=%.2f EC=%.0f OD(NTU)=%.0f LEDPWM=%d MODE=%s | WiFi=%s(%ddBm) MQTT=%s NTP=%s\n",
+      state.current_time_str.c_str(),
+      state.led_phase.c_str(),
+      state.led_next_change.c_str(),
       state.temp_fault ? 0.0f : state.temperature,
       state.temp_fault ? "(FAULT)" : "",
       state.lux,
       isnan(state.ph) ? 0.0f : state.ph,
       isnan(state.ec_uScm) ? 0.0f : state.ec_uScm,
       isnan(state.od) ? 0.0f : state.od,
+      state.led_pwm,
+      state.led_auto ? "AUTO" : "MAN",
       state.wifi_ok ? "OK" : "NO", state.rssi,
       state.mqtt_ok ? "OK" : "NO",
-      state.ntp_ok  ? "OK" : "NO");
+      state.ntp_ok ? "OK" : "NO");
 
-    // Primo publish non appena NTP e MQTT sono pronti
     if (!firstPublishDone && state.ntp_ok && state.mqtt_ok && state.ts > 0) {
       firstPublishDone = true;
       lastPublishMs = nowMs;
@@ -594,7 +702,6 @@ void loop() {
     }
   }
 
-  // --- publish MQTT ogni 5 min ---
   if (firstPublishDone && nowMs - lastPublishMs >= PUBLISH_INTERVAL_MS) {
     lastPublishMs = nowMs;
     if (state.ts > 0) {
