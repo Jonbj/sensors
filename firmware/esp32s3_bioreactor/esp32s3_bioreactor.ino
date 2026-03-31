@@ -403,7 +403,12 @@ void handleSetLed() {
 }
 
 void handleLedConfig() {
-  if (server.hasArg("profile")) { state.led_profile = server.arg("profile"); if (state.led_profile != "custom") applyLedProfile(state.led_profile); }
+  if (server.hasArg("profile")) {
+    state.led_profile = server.arg("profile");
+    bool validProfile = (state.led_profile == "custom" || state.led_profile == "safe" || state.led_profile == "growth" || state.led_profile == "maint");
+    if (!validProfile) state.led_profile = "custom";
+    if (state.led_profile != "custom") applyLedProfile(state.led_profile);
+  }
   if (server.hasArg("dayStart")) state.day_start_min = parseHHMMToMin(server.arg("dayStart"));
   if (server.hasArg("dayEnd")) state.day_end_min = parseHHMMToMin(server.arg("dayEnd"));
   if (server.hasArg("ramp")) state.ramp_minutes = constrain(server.arg("ramp").toInt(), 0, 180);
@@ -430,7 +435,7 @@ void handleLedMode() {
 }
 
 void handleData() {
-  char buf[1024];
+  char buf[1536];
   char t_str[12], l_str[12], ph_str[12], ec_str[12], od_str[12];
   if (isnan(state.temperature) || state.temp_fault) snprintf(t_str, sizeof(t_str), "null");
   else snprintf(t_str, sizeof(t_str), "%.2f", state.temperature);
@@ -443,10 +448,11 @@ void handleData() {
   if (isnan(state.od)) snprintf(od_str, sizeof(od_str), "null");
   else snprintf(od_str, sizeof(od_str), "%.1f", state.od);
 
-  snprintf(buf, sizeof(buf),
+  int written = snprintf(buf, sizeof(buf),
     "{\"temperature\":%s,\"lux\":%s,\"temp_fault\":%s,\"ph\":%s,\"ec\":%s,\"od\":%s,\"led_pwm\":%d,\"led_auto\":%s,\"led_phase\":\"%s\",\"led_profile\":\"%s\",\"led_next_change\":\"%s\",\"current_time\":\"%s\",\"led_target_pwm\":%d,\"thermal_limited_pwm\":%d,\"thermal_reduction_pct\":%d,\"day_start_min\":%d,\"day_end_min\":%d,\"ramp_minutes\":%d,\"led_day_pwm\":%d,\"led_night_pwm\":%d,\"temp_soft_limit_c\":%.1f,\"temp_hard_limit_c\":%.1f,\"midday_boost_pct\":%d,\"ts\":%lu,\"wifi\":%s,\"mqtt\":%s,\"ntp\":%s,\"rssi\":%d}",
     t_str, l_str, state.temp_fault ? "true" : "false", ph_str, ec_str, od_str, state.led_pwm, state.led_auto ? "true" : "false", state.led_phase.c_str(), state.led_profile.c_str(), state.led_next_change.c_str(), state.current_time_str.c_str(), state.led_target_pwm, state.thermal_limited_pwm, state.thermal_reduction_pct, state.day_start_min, state.day_end_min, state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.temp_soft_limit_c, state.temp_hard_limit_c, state.midday_boost_pct, state.ts,
     state.wifi_ok ? "true" : "false", state.mqtt_ok ? "true" : "false", state.ntp_ok ? "true" : "false", state.rssi);
+  if (written >= (int)sizeof(buf)) Serial.println("⚠️ handleData JSON truncated");
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", buf);
 }
@@ -688,6 +694,9 @@ void setup() {
   Wire.begin(8, 9);
   Wire.setClock(100000);
 
+  for (int i = 0; i < PH_ARRAY_LEN; i++) phArray[i] = 2048;
+  for (int i = 0; i < EC_ARRAY_LEN; i++) ecArray[i] = 2048;
+
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
@@ -712,7 +721,7 @@ void setup() {
 
   espClient.setCACert(LE_ROOT_CA);
   mqttClient.setServer(mqtt_server, mqtt_port);
-  mqttClient.setBufferSize(256);
+  mqttClient.setBufferSize(384);
 
   loadLedConfig();
   ledcAttach(LED_PWM_PIN, LED_PWM_FREQ, LED_PWM_RES_BITS);
