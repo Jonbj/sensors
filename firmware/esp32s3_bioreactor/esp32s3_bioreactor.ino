@@ -285,7 +285,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   <div class="card"><div class="label">Riduzione termica</div><div class="value" id="thermal_reduction_pct">—</div><div class="unit">%</div></div>
 </div>
 
-<div class="panel">
+<div class="panel" id="ledConfigForm">
   <div class="label" style="margin-bottom:12px">Controllo luce damigiana</div>
   <label class="toggle-line" for="ledAuto">
     <input type="checkbox" id="ledAuto">
@@ -352,11 +352,15 @@ const sliderValue = document.getElementById('ledSliderValue');
 const autoChk = document.getElementById('ledAuto');
 let ledDebounce = null;
 let suspendFieldRefreshUntil = 0;
+document.querySelectorAll('#ledConfigForm input, #ledConfigForm select').forEach(el => {
+  el.addEventListener('focus', () => { suspendFieldRefreshUntil = Date.now() + 60000; });
+  el.addEventListener('blur', () => { suspendFieldRefreshUntil = Date.now() + 3000; });
+});
 slider.addEventListener('input', () => { sliderValue.textContent = slider.value; clearTimeout(ledDebounce); ledDebounce = setTimeout(() => setLedPwm(slider.value), 120); });
 autoChk.addEventListener('change', async () => { await fetch('/ledmode?auto=' + (autoChk.checked ? '1' : '0')); setTimeout(refresh, 150); });
 async function setLedPwm(v) { await fetch('/led?duty=' + encodeURIComponent(v)); setTimeout(refresh, 120); }
 async function saveLedConfig() {
-  suspendFieldRefreshUntil = Date.now() + 4000;
+  suspendFieldRefreshUntil = Date.now() + 8000;
   const params = new URLSearchParams({
     profile: document.getElementById('ledProfile').value,
     dayStart: document.getElementById('dayStart').value,
@@ -417,12 +421,20 @@ void handleSetLed() {
 }
 
 void handleLedConfig() {
-  if (server.hasArg("profile")) {
-    state.led_profile = server.arg("profile");
-    bool validProfile = (state.led_profile == "custom" || state.led_profile == "safe" || state.led_profile == "growth" || state.led_profile == "maint");
-    if (!validProfile) state.led_profile = "custom";
-    if (state.led_profile != "custom") applyLedProfile(state.led_profile);
+  String incomingProfile = server.hasArg("profile") ? server.arg("profile") : state.led_profile;
+  bool validProfile = (incomingProfile == "custom" || incomingProfile == "safe" || incomingProfile == "growth" || incomingProfile == "maint");
+  if (!validProfile) incomingProfile = "custom";
+
+  bool userEditedFields = server.hasArg("dayStart") || server.hasArg("dayEnd") || server.hasArg("ramp") ||
+                          server.hasArg("dayPwm") || server.hasArg("nightPwm") || server.hasArg("tempSoft") ||
+                          server.hasArg("tempHard") || server.hasArg("middayBoost");
+
+  // Presets act as explicit templates: apply only when explicitly selected and different from current profile.
+  if (incomingProfile != "custom" && incomingProfile != state.led_profile) {
+    applyLedProfile(incomingProfile);
   }
+
+  // Individual submitted fields always override preset values.
   if (server.hasArg("dayStart")) state.day_start_min = parseHHMMToMin(server.arg("dayStart"));
   if (server.hasArg("dayEnd")) state.day_end_min = parseHHMMToMin(server.arg("dayEnd"));
   if (server.hasArg("ramp")) state.ramp_minutes = constrain(server.arg("ramp").toInt(), 0, 180);
@@ -431,12 +443,26 @@ void handleLedConfig() {
   if (server.hasArg("tempSoft")) state.temp_soft_limit_c = constrain(server.arg("tempSoft").toFloat(), 10.0f, 50.0f);
   if (server.hasArg("tempHard")) state.temp_hard_limit_c = constrain(server.arg("tempHard").toFloat(), 10.0f, 50.0f);
   if (server.hasArg("middayBoost")) state.midday_boost_pct = constrain(server.arg("middayBoost").toInt(), 50, 150);
+
+  // If the user manually edits any field, the result becomes custom.
+  if (userEditedFields && incomingProfile != "custom") state.led_profile = "custom";
+  else state.led_profile = incomingProfile;
+
   saveLedConfig();
-  loadLedConfig();
   applyLedControl();
-  Serial.printf("LED config salvata -> profile=%s start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%\n", state.led_profile.c_str(), minToHHMMString(state.day_start_min).c_str(), minToHHMMString(state.day_end_min).c_str(), state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.temp_soft_limit_c, state.temp_hard_limit_c, state.midday_boost_pct);
+  Serial.printf("LED config salvata -> profile=%s start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%
+",
+    state.led_profile.c_str(),
+    minToHHMMString(state.day_start_min).c_str(),
+    minToHHMMString(state.day_end_min).c_str(),
+    state.ramp_minutes,
+    state.led_day_pwm,
+    state.led_night_pwm,
+    state.temp_soft_limit_c,
+    state.temp_hard_limit_c,
+    state.midday_boost_pct);
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.send(200, "application/json", "{\"ok\":true}");
+  server.send(200, "application/json", "{"ok":true}");
 }
 
 void handleLedMode() {
