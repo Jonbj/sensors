@@ -39,6 +39,10 @@
 #define TEMP_SOFT_LIMIT_C  30.0f
 #define TEMP_HARD_LIMIT_C  32.0f
 #define MIDDAY_BOOST_PCT   100
+#define TEMP_EWA_ALPHA     0.10f
+#define LUX_EWA_ALPHA      0.15f
+#define TEMP_OUTLIER_C     5.0f
+#define THERMAL_HYST_C     0.3f
 
 Preferences preferences;
 
@@ -162,12 +166,15 @@ float readPH() {
 #define EC_ARRAY_LEN 40
 int ecArray[EC_ARRAY_LEN];
 int ecArrayIndex = 0;
-bool ecConnected = true;
+int ecValidSamples = 0;
+bool ecConnected = false;
 
 float readEC(float temperatureC) {
   if (!ecConnected) return NAN;
   ecArray[ecArrayIndex++] = analogRead(EC_PIN);
   if (ecArrayIndex >= EC_ARRAY_LEN) ecArrayIndex = 0;
+  if (ecValidSamples < EC_ARRAY_LEN) ecValidSamples++;
+  if (ecValidSamples < 20) return NAN;
   int tmp[EC_ARRAY_LEN];
   memcpy(tmp, ecArray, sizeof(ecArray));
   float raw     = phAverageArray(tmp, EC_ARRAY_LEN);
@@ -222,6 +229,9 @@ struct SensorState {
   int   led_target_pwm = 0;
   int   thermal_limited_pwm = 0;
   int   thermal_reduction_pct = 0;
+  bool  thermal_limit_active = false;
+  bool  temp_initialized = false;
+  bool  lux_initialized = false;
   unsigned long ts  = 0;
   bool  wifi_ok     = false;
   bool  mqtt_ok     = false;
@@ -661,14 +671,21 @@ int computeAutoLedPwm() {
   state.led_target_pwm = constrain(basePwm, 0, 255);
 
   if (!isnan(state.temperature)) {
+    float enterSoft = state.temp_soft_limit_c;
+    float exitSoft = state.temp_soft_limit_c - THERMAL_HYST_C;
+    if (!state.thermal_limit_active && state.temperature > enterSoft) state.thermal_limit_active = true;
+    if (state.thermal_limit_active && state.temperature < exitSoft) state.thermal_limit_active = false;
+
     if (state.temperature >= state.temp_hard_limit_c) {
+      state.thermal_limit_active = true;
       basePwm = state.led_night_pwm;
       state.thermal_reduction_pct = 100;
-    } else if (state.temperature > state.temp_soft_limit_c) {
+    } else if (state.thermal_limit_active) {
       float span = state.temp_hard_limit_c - state.temp_soft_limit_c;
       if (span < 0.1f) span = 0.1f;
       float factor = 1.0f - (state.temperature - state.temp_soft_limit_c) / span;
       if (factor < 0.0f) factor = 0.0f;
+      if (factor > 1.0f) factor = 1.0f;
       state.thermal_reduction_pct = int((1.0f - factor) * 100.0f);
       basePwm = state.led_night_pwm + int((basePwm - state.led_night_pwm) * factor);
     }
@@ -696,6 +713,7 @@ void setup() {
 
   for (int i = 0; i < PH_ARRAY_LEN; i++) phArray[i] = 2048;
   for (int i = 0; i < EC_ARRAY_LEN; i++) ecArray[i] = 2048;
+  ecValidSamples = 0;
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
@@ -782,21 +800,41 @@ void loop() {
     state.ntp_ok = getLocalTime(&timeinfo, 500);
     if (state.ntp_ok) state.ts = (unsigned long)mktime(&timeinfo);
 
-    state.lux     = lightMeter.readLightLevel() * LUX_FACTOR;
+    float rawLux = lightMeter.readLightLevel();
+    if (rawLux >= 0) {
+      float newLux = rawLux * LUX_FACTOR;
+      if (!state.lux_initialized || isnan(state.lux)) {
+        state.lux = newLux;
+        state.lux_initialized = true;
+      } else {
+        state.lux = LUX_EWA_ALPHA * newLux + (1.0f - LUX_EWA_ALPHA) * state.lux;
+      }
+    }
+
     state.ph      = readPH();
-    state.ec_uScm = readEC(isnan(state.temperature) ? 25.0f : state.temperature);
     state.od      = readTurbidity();
 
     uint8_t fault = max31865.readFault();
     if (fault) {
       state.temp_fault = true;
       state.temperature = NAN;
+      state.temp_initialized = false;
       Serial.printf("⚠️ MAX31865 fault: 0x%02X\n", fault);
       max31865.clearFault();
     } else {
       state.temp_fault = false;
-      state.temperature = max31865.temperature(RNOMINAL, RREF);
+      float newTemp = max31865.temperature(RNOMINAL, RREF);
+      if (!state.temp_initialized || isnan(state.temperature)) {
+        state.temperature = newTemp;
+        state.temp_initialized = true;
+      } else if (fabsf(newTemp - state.temperature) <= TEMP_OUTLIER_C) {
+        state.temperature = TEMP_EWA_ALPHA * newTemp + (1.0f - TEMP_EWA_ALPHA) * state.temperature;
+      } else {
+        Serial.printf("⚠️ Temp outlier scartato: %.2f (prev %.2f)\n", newTemp, state.temperature);
+      }
     }
+
+    state.ec_uScm = readEC(isnan(state.temperature) ? 25.0f : state.temperature);
 
     state.wifi_ok = WiFi.status() == WL_CONNECTED;
     state.mqtt_ok = mqttClient.connected();
