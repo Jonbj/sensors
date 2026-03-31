@@ -36,8 +36,15 @@
 #define RAMP_MINUTES       30
 #define LED_DAY_PWM        180
 #define LED_NIGHT_PWM      0
+#define TEMP_SOFT_LIMIT_C  30.0f
+#define TEMP_HARD_LIMIT_C  32.0f
+#define MIDDAY_BOOST_PCT   100
 
 Preferences preferences;
+
+const char* LED_PROFILE_SAFE = "safe";
+const char* LED_PROFILE_GROWTH = "growth";
+const char* LED_PROFILE_MAINT = "maint";
 
 // === TLS CA (Let's Encrypt ISRG Root X1) ===
 static const char LE_ROOT_CA[] PROGMEM = R"EOF(
@@ -205,9 +212,16 @@ struct SensorState {
   int   ramp_minutes  = RAMP_MINUTES;
   int   led_day_pwm   = LED_DAY_PWM;
   int   led_night_pwm = LED_NIGHT_PWM;
+  float temp_soft_limit_c = TEMP_SOFT_LIMIT_C;
+  float temp_hard_limit_c = TEMP_HARD_LIMIT_C;
+  int   midday_boost_pct = MIDDAY_BOOST_PCT;
   String led_phase = "manual";
+  String led_profile = "custom";
   String led_next_change = "—";
   String current_time_str = "—";
+  int   led_target_pwm = 0;
+  int   thermal_limited_pwm = 0;
+  int   thermal_reduction_pct = 0;
   unsigned long ts  = 0;
   bool  wifi_ok     = false;
   bool  mqtt_ok     = false;
@@ -256,7 +270,9 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   <div class="card"><div class="label">pH</div><div class="value" id="ph">—</div><div class="unit">&nbsp;</div></div>
   <div class="card"><div class="label">Conducibilità (EC)</div><div class="value" id="ec">—</div><div class="unit">µS/cm</div></div>
   <div class="card"><div class="label">Torbidità (OD proxy)</div><div class="value" id="od">—</div><div class="unit">NTU</div></div>
-  <div class="card"><div class="label">LED PWM</div><div class="value" id="led_pwm">—</div><div class="unit">0–255</div></div>
+  <div class="card"><div class="label">LED PWM effettivo</div><div class="value" id="led_pwm">—</div><div class="unit">0–255</div></div>
+  <div class="card"><div class="label">LED target</div><div class="value" id="led_target_pwm">—</div><div class="unit">prima dei limiti termici</div></div>
+  <div class="card"><div class="label">Riduzione termica</div><div class="value" id="thermal_reduction_pct">—</div><div class="unit">%</div></div>
 </div>
 
 <div class="panel">
@@ -268,14 +284,18 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   <div style="margin-bottom:8px;font-size:.95rem;color:#ddd">Duty manuale: <span id="ledSliderValue">0</span></div>
   <input type="range" min="0" max="255" value="0" id="ledSlider">
   <div class="form-grid">
+    <div class="field"><label for="ledProfile">Profilo biologico</label><select id="ledProfile" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #333;background:#11141c;color:#fff"><option value="custom">Custom</option><option value="safe">Safe</option><option value="growth">Growth</option><option value="maint">Maintenance</option></select></div>
     <div class="field"><label for="dayStart">Inizio giorno</label><input type="time" id="dayStart"></div>
     <div class="field"><label for="dayEnd">Fine giorno</label><input type="time" id="dayEnd"></div>
     <div class="field"><label for="rampMinutes">Rampa (min)</label><input type="number" id="rampMinutes" min="0" max="180"></div>
     <div class="field"><label for="dayPwm">Duty giorno</label><input type="number" id="dayPwm" min="0" max="255"></div>
     <div class="field"><label for="nightPwm">Duty notte</label><input type="number" id="nightPwm" min="0" max="255"></div>
+    <div class="field"><label for="tempSoft">T soft limit (°C)</label><input type="number" id="tempSoft" min="10" max="50" step="0.1"></div>
+    <div class="field"><label for="tempHard">T hard limit (°C)</label><input type="number" id="tempHard" min="10" max="50" step="0.1"></div>
+    <div class="field"><label for="middayBoost">Boost mezzogiorno (%)</label><input type="number" id="middayBoost" min="50" max="150"></div>
   </div>
   <button onclick="saveLedConfig()">Salva configurazione luce</button>
-  <div class="hint">Configurazione persistente al riavvio. Lo stato ciclo viene mostrato sopra.</div>
+  <div class="hint">Configurazione persistente al riavvio. Logica biologica: boost moderato nelle ore centrali e riduzione automatica se la temperatura sale troppo.</div>
 </div>
 
 <script>
@@ -294,6 +314,8 @@ async function refresh() {
   document.getElementById('ec').textContent = d.ec !== null ? fmt(d.ec, 0) : '—';
   document.getElementById('od').textContent = d.od !== null ? fmt(d.od, 0) : '—';
   document.getElementById('led_pwm').textContent = d.led_pwm ?? '—';
+  document.getElementById('led_target_pwm').textContent = d.led_target_pwm ?? '—';
+  document.getElementById('thermal_reduction_pct').textContent = d.thermal_reduction_pct ?? '—';
 
   const slider = document.getElementById('ledSlider');
   const sliderValue = document.getElementById('ledSliderValue');
@@ -303,11 +325,15 @@ async function refresh() {
   if (document.activeElement !== slider) slider.value = d.led_pwm ?? 0;
   sliderValue.textContent = slider.value;
 
+  if (document.activeElement.id !== 'ledProfile') document.getElementById('ledProfile').value = d.led_profile || 'custom';
   if (document.activeElement.id !== 'dayStart') document.getElementById('dayStart').value = minToHHMM(d.day_start_min || 480);
   if (document.activeElement.id !== 'dayEnd') document.getElementById('dayEnd').value = minToHHMM(d.day_end_min || 1200);
   if (document.activeElement.id !== 'rampMinutes') document.getElementById('rampMinutes').value = d.ramp_minutes ?? 30;
   if (document.activeElement.id !== 'dayPwm') document.getElementById('dayPwm').value = d.led_day_pwm ?? 180;
   if (document.activeElement.id !== 'nightPwm') document.getElementById('nightPwm').value = d.led_night_pwm ?? 0;
+  if (document.activeElement.id !== 'tempSoft') document.getElementById('tempSoft').value = d.temp_soft_limit_c ?? 30.0;
+  if (document.activeElement.id !== 'tempHard') document.getElementById('tempHard').value = d.temp_hard_limit_c ?? 32.0;
+  if (document.activeElement.id !== 'middayBoost') document.getElementById('middayBoost').value = d.midday_boost_pct ?? 100;
 }
 const slider = document.getElementById('ledSlider');
 const sliderValue = document.getElementById('ledSliderValue');
@@ -318,14 +344,31 @@ autoChk.addEventListener('change', async () => { await fetch('/ledmode?auto=' + 
 async function setLedPwm(v) { await fetch('/led?duty=' + encodeURIComponent(v)); setTimeout(refresh, 120); }
 async function saveLedConfig() {
   const params = new URLSearchParams({
+    profile: document.getElementById('ledProfile').value,
     dayStart: document.getElementById('dayStart').value,
     dayEnd: document.getElementById('dayEnd').value,
     ramp: document.getElementById('rampMinutes').value,
     dayPwm: document.getElementById('dayPwm').value,
     nightPwm: document.getElementById('nightPwm').value,
+    tempSoft: document.getElementById('tempSoft').value,
+    tempHard: document.getElementById('tempHard').value,
+    middayBoost: document.getElementById('middayBoost').value,
   });
-  await fetch('/ledconfig?' + params.toString());
-  setTimeout(refresh, 150);
+  const saveBtn = document.getElementById('saveLedBtn');
+  const saveStatus = document.getElementById('saveStatus');
+  saveBtn.disabled = true;
+  saveStatus.textContent = 'Salvataggio in corso...';
+  try {
+    const r = await fetch('/ledconfig?' + params.toString());
+    const j = await r.json();
+    if (j.ok) saveStatus.textContent = 'Configurazione salvata';
+    else saveStatus.textContent = 'Salvataggio fallito';
+  } catch(e) {
+    saveStatus.textContent = 'Errore salvataggio';
+  } finally {
+    saveBtn.disabled = false;
+    setTimeout(refresh, 150);
+  }
 }
 refresh(); setInterval(refresh, 2000);
 </script>
@@ -339,6 +382,7 @@ void saveLedConfig();
 int parseHHMMToMin(const String &hhmm);
 String minToHHMMString(int m);
 void updateLedCycleStatus();
+void applyLedProfile(const String &profile);
 
 void handleRoot() { server.send_P(200, "text/html", HTML_PAGE); }
 
@@ -359,14 +403,18 @@ void handleSetLed() {
 }
 
 void handleLedConfig() {
+  if (server.hasArg("profile")) { state.led_profile = server.arg("profile"); if (state.led_profile != "custom") applyLedProfile(state.led_profile); }
   if (server.hasArg("dayStart")) state.day_start_min = parseHHMMToMin(server.arg("dayStart"));
   if (server.hasArg("dayEnd")) state.day_end_min = parseHHMMToMin(server.arg("dayEnd"));
   if (server.hasArg("ramp")) state.ramp_minutes = constrain(server.arg("ramp").toInt(), 0, 180);
   if (server.hasArg("dayPwm")) state.led_day_pwm = constrain(server.arg("dayPwm").toInt(), 0, 255);
   if (server.hasArg("nightPwm")) state.led_night_pwm = constrain(server.arg("nightPwm").toInt(), 0, 255);
+  if (server.hasArg("tempSoft")) state.temp_soft_limit_c = constrain(server.arg("tempSoft").toFloat(), 10.0f, 50.0f);
+  if (server.hasArg("tempHard")) state.temp_hard_limit_c = constrain(server.arg("tempHard").toFloat(), 10.0f, 50.0f);
+  if (server.hasArg("middayBoost")) state.midday_boost_pct = constrain(server.arg("middayBoost").toInt(), 50, 150);
   saveLedConfig();
   applyLedControl();
-  Serial.printf("LED config salvata -> start=%s end=%s ramp=%d day=%d night=%d\n", minToHHMMString(state.day_start_min).c_str(), minToHHMMString(state.day_end_min).c_str(), state.ramp_minutes, state.led_day_pwm, state.led_night_pwm);
+  Serial.printf("LED config salvata -> start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%\n", minToHHMMString(state.day_start_min).c_str(), minToHHMMString(state.day_end_min).c_str(), state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.temp_soft_limit_c, state.temp_hard_limit_c, state.midday_boost_pct);
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -382,7 +430,7 @@ void handleLedMode() {
 }
 
 void handleData() {
-  char buf[420];
+  char buf[1024];
   char t_str[12], l_str[12], ph_str[12], ec_str[12], od_str[12];
   if (isnan(state.temperature) || state.temp_fault) snprintf(t_str, sizeof(t_str), "null");
   else snprintf(t_str, sizeof(t_str), "%.2f", state.temperature);
@@ -396,8 +444,8 @@ void handleData() {
   else snprintf(od_str, sizeof(od_str), "%.1f", state.od);
 
   snprintf(buf, sizeof(buf),
-    "{\"temperature\":%s,\"lux\":%s,\"temp_fault\":%s,\"ph\":%s,\"ec\":%s,\"od\":%s,\"led_pwm\":%d,\"led_auto\":%s,\"led_phase\":\"%s\",\"led_next_change\":\"%s\",\"current_time\":\"%s\",\"day_start_min\":%d,\"day_end_min\":%d,\"ramp_minutes\":%d,\"led_day_pwm\":%d,\"led_night_pwm\":%d,\"ts\":%lu,\"wifi\":%s,\"mqtt\":%s,\"ntp\":%s,\"rssi\":%d}",
-    t_str, l_str, state.temp_fault ? "true" : "false", ph_str, ec_str, od_str, state.led_pwm, state.led_auto ? "true" : "false", state.led_phase.c_str(), state.led_next_change.c_str(), state.current_time_str.c_str(), state.day_start_min, state.day_end_min, state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.ts,
+    "{\"temperature\":%s,\"lux\":%s,\"temp_fault\":%s,\"ph\":%s,\"ec\":%s,\"od\":%s,\"led_pwm\":%d,\"led_auto\":%s,\"led_phase\":\"%s\",\"led_profile\":\"%s\",\"led_next_change\":\"%s\",\"current_time\":\"%s\",\"led_target_pwm\":%d,\"thermal_limited_pwm\":%d,\"thermal_reduction_pct\":%d,\"day_start_min\":%d,\"day_end_min\":%d,\"ramp_minutes\":%d,\"led_day_pwm\":%d,\"led_night_pwm\":%d,\"temp_soft_limit_c\":%.1f,\"temp_hard_limit_c\":%.1f,\"midday_boost_pct\":%d,\"ts\":%lu,\"wifi\":%s,\"mqtt\":%s,\"ntp\":%s,\"rssi\":%d}",
+    t_str, l_str, state.temp_fault ? "true" : "false", ph_str, ec_str, od_str, state.led_pwm, state.led_auto ? "true" : "false", state.led_phase.c_str(), state.led_profile.c_str(), state.led_next_change.c_str(), state.current_time_str.c_str(), state.led_target_pwm, state.thermal_limited_pwm, state.thermal_reduction_pct, state.day_start_min, state.day_end_min, state.ramp_minutes, state.led_day_pwm, state.led_night_pwm, state.temp_soft_limit_c, state.temp_hard_limit_c, state.midday_boost_pct, state.ts,
     state.wifi_ok ? "true" : "false", state.mqtt_ok ? "true" : "false", state.ntp_ok ? "true" : "false", state.rssi);
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", buf);
@@ -510,6 +558,37 @@ void updateLedCycleStatus() {
   }
 }
 
+void applyLedProfile(const String &profile) {
+  if (profile == LED_PROFILE_SAFE) {
+    state.day_start_min = 8 * 60;
+    state.day_end_min = 20 * 60;
+    state.ramp_minutes = 45;
+    state.led_day_pwm = 160;
+    state.led_night_pwm = 0;
+    state.temp_soft_limit_c = 28.5f;
+    state.temp_hard_limit_c = 30.5f;
+    state.midday_boost_pct = 105;
+  } else if (profile == LED_PROFILE_GROWTH) {
+    state.day_start_min = 7 * 60 + 30;
+    state.day_end_min = 20 * 60 + 30;
+    state.ramp_minutes = 60;
+    state.led_day_pwm = 185;
+    state.led_night_pwm = 0;
+    state.temp_soft_limit_c = 29.0f;
+    state.temp_hard_limit_c = 31.0f;
+    state.midday_boost_pct = 110;
+  } else if (profile == LED_PROFILE_MAINT) {
+    state.day_start_min = 8 * 60;
+    state.day_end_min = 19 * 60;
+    state.ramp_minutes = 45;
+    state.led_day_pwm = 135;
+    state.led_night_pwm = 0;
+    state.temp_soft_limit_c = 28.0f;
+    state.temp_hard_limit_c = 30.0f;
+    state.midday_boost_pct = 100;
+  }
+}
+
 void loadLedConfig() {
   preferences.begin("bioreactor", true);
   state.led_auto = preferences.getBool("led_auto", LED_MODE_AUTO);
@@ -518,6 +597,10 @@ void loadLedConfig() {
   state.ramp_minutes = preferences.getInt("ramp_min", RAMP_MINUTES);
   state.led_day_pwm = preferences.getInt("day_pwm", LED_DAY_PWM);
   state.led_night_pwm = preferences.getInt("night_pwm", LED_NIGHT_PWM);
+  state.temp_soft_limit_c = preferences.getFloat("t_soft", TEMP_SOFT_LIMIT_C);
+  state.temp_hard_limit_c = preferences.getFloat("t_hard", TEMP_HARD_LIMIT_C);
+  state.midday_boost_pct = preferences.getInt("mid_boost", MIDDAY_BOOST_PCT);
+  state.led_profile = preferences.getString("profile", "custom");
   preferences.end();
 }
 
@@ -529,6 +612,10 @@ void saveLedConfig() {
   preferences.putInt("ramp_min", state.ramp_minutes);
   preferences.putInt("day_pwm", state.led_day_pwm);
   preferences.putInt("night_pwm", state.led_night_pwm);
+  preferences.putFloat("t_soft", state.temp_soft_limit_c);
+  preferences.putFloat("t_hard", state.temp_hard_limit_c);
+  preferences.putInt("mid_boost", state.midday_boost_pct);
+  preferences.putString("profile", state.led_profile);
   preferences.end();
 }
 
@@ -540,26 +627,54 @@ int computeAutoLedPwm() {
   int dayEnd = state.day_end_min;
   int ramp = state.ramp_minutes;
 
+  int basePwm = state.led_night_pwm;
+  state.thermal_reduction_pct = 0;
+
   if (ramp <= 0) {
-    if (nowMin >= dayStart && nowMin < dayEnd) return state.led_day_pwm;
-    return state.led_night_pwm;
+    basePwm = (nowMin >= dayStart && nowMin < dayEnd) ? state.led_day_pwm : state.led_night_pwm;
+  } else if (nowMin < dayStart - ramp || nowMin >= dayEnd + ramp) {
+    basePwm = state.led_night_pwm;
+  } else if (nowMin >= dayStart && nowMin < dayEnd) {
+    basePwm = state.led_day_pwm;
+    int center = (dayStart + dayEnd) / 2;
+    int halfWindow = max(1, (dayEnd - dayStart) / 4);
+    int dist = abs(nowMin - center);
+    if (dist < halfWindow) {
+      float x = 1.0f - (float)dist / (float)halfWindow;
+      float boost = 1.0f + ((state.midday_boost_pct - 100) / 100.0f) * x;
+      basePwm = (int)(basePwm * boost);
+    }
+  } else if (nowMin >= dayStart - ramp && nowMin < dayStart) {
+    float x = float(nowMin - (dayStart - ramp)) / float(ramp);
+    basePwm = int(state.led_night_pwm + x * (state.led_day_pwm - state.led_night_pwm));
+  } else if (nowMin >= dayEnd && nowMin < dayEnd + ramp) {
+    float x = float(nowMin - dayEnd) / float(ramp);
+    basePwm = int(state.led_day_pwm + x * (state.led_night_pwm - state.led_day_pwm));
   }
 
-  if (nowMin < dayStart - ramp || nowMin >= dayEnd + ramp) return state.led_night_pwm;
-  if (nowMin >= dayStart && nowMin < dayEnd) return state.led_day_pwm;
-  if (nowMin >= dayStart - ramp && nowMin < dayStart) {
-    float x = float(nowMin - (dayStart - ramp)) / float(ramp);
-    return int(state.led_night_pwm + x * (state.led_day_pwm - state.led_night_pwm));
+  state.led_target_pwm = constrain(basePwm, 0, 255);
+
+  if (!isnan(state.temperature)) {
+    if (state.temperature >= state.temp_hard_limit_c) {
+      basePwm = state.led_night_pwm;
+      state.thermal_reduction_pct = 100;
+    } else if (state.temperature > state.temp_soft_limit_c) {
+      float span = state.temp_hard_limit_c - state.temp_soft_limit_c;
+      if (span < 0.1f) span = 0.1f;
+      float factor = 1.0f - (state.temperature - state.temp_soft_limit_c) / span;
+      if (factor < 0.0f) factor = 0.0f;
+      state.thermal_reduction_pct = int((1.0f - factor) * 100.0f);
+      basePwm = state.led_night_pwm + int((basePwm - state.led_night_pwm) * factor);
+    }
   }
-  if (nowMin >= dayEnd && nowMin < dayEnd + ramp) {
-    float x = float(nowMin - dayEnd) / float(ramp);
-    return int(state.led_day_pwm + x * (state.led_night_pwm - state.led_day_pwm));
-  }
-  return state.led_night_pwm;
+
+  state.thermal_limited_pwm = constrain(basePwm, 0, 255);
+  return state.thermal_limited_pwm;
 }
 
 void applyLedControl() {
   int duty = state.led_auto ? computeAutoLedPwm() : state.led_pwm;
+  if (!state.led_auto) { state.led_target_pwm = duty; state.thermal_limited_pwm = duty; state.thermal_reduction_pct = 0; }
   if (duty < 0) duty = 0;
   if (duty > 255) duty = 255;
   state.led_pwm = duty;
