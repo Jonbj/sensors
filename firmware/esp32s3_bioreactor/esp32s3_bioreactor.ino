@@ -450,8 +450,7 @@ void handleLedConfig() {
 
   saveLedConfig();
   applyLedControl();
-  Serial.printf("LED config salvata -> profile=%s start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%
-",
+  Serial.printf("LED config salvata -> profile=%s start=%s end=%s ramp=%d day=%d night=%d soft=%.1f hard=%.1f boost=%d%%\n",
     state.led_profile.c_str(),
     minToHHMMString(state.day_start_min).c_str(),
     minToHHMMString(state.day_end_min).c_str(),
@@ -462,7 +461,7 @@ void handleLedConfig() {
     state.temp_hard_limit_c,
     state.midday_boost_pct);
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.send(200, "application/json", "{"ok":true}");
+  server.send(200, "application/json", "{\"ok\":true}");
 }
 
 void handleLedMode() {
